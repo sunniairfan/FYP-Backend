@@ -1,14 +1,12 @@
 const fs = require("fs");
 const path = require("path");
 const { checkVirusTotal } = require("../utils/virusTotal");
-const { checkAbuseCH } = require("../utils/abusech");
 
 const signaturePath = path.join(__dirname, "../signatureDB.json");
 const knownHashes = fs.existsSync(signaturePath)
   ? JSON.parse(fs.readFileSync(signaturePath, "utf-8"))
   : [];
 
-// Step 1: Check Local Signature DB
 const isHashMalicious = (hash) => knownHashes.includes(hash);
 
 const receiveAppData = async (req, res) => {
@@ -29,13 +27,10 @@ const receiveAppData = async (req, res) => {
       let status = "unknown";
       let source = "Unknown";
 
-      // Check if app already in Elasticsearch
       const existing = await esClient.search({
         index: "apps",
-        query: {
-          match: { sha256 }
-        },
-        size: 1
+        query: { match: { sha256 } },
+        size: 1,
       });
 
       if (existing.hits.hits.length > 0) {
@@ -44,52 +39,34 @@ const receiveAppData = async (req, res) => {
         source = doc.source || "Unknown";
         console.log(`📦 Found in Elasticsearch → ${packageName}: ${status}`);
       } else {
-        // Step 2: Check local signature DB
         if (isHashMalicious(sha256)) {
           status = "malicious";
           source = "SignatureDB";
           console.log(`☠️ Found in SignatureDB → ${packageName}`);
         } else {
-          // Step 3: Check VirusTotal
           const vtResult = await checkVirusTotal(sha256);
           if (vtResult === "malicious") {
             status = "malicious";
             source = "VirusTotal";
-            console.log(`🧪 VirusTotal → ${packageName}: malicious`);
           } else {
-            status = vtResult; // safe or unknown
+            status = vtResult;
             source = "VirusTotal";
-            console.log(`🧪 VirusTotal → ${packageName}: ${status}`);
           }
-
-          // Step 4: Check Abuse.ch only if safe/unknown
-          if (status === "safe" || status === "unknown") {
-            const abuseStatus = await checkAbuseCH(sha256);
-            if (abuseStatus === "malicious") {
-              status = "malicious";
-              source = "Abuse.ch";
-              console.log(`☠️ Abuse.ch detected malicious → ${packageName}`);
-            } else {
-              console.log(`✔️ Abuse.ch → ${packageName}: ${abuseStatus}`);
-            }
-          }
+          console.log(`🧪 VirusTotal → ${packageName}: ${status}`);
         }
-
-        // Step 5: Save to Elasticsearch
-        const doc = {
-          appName,
-          packageName,
-          sha256,
-          sizeMB,
-          permissions,
-          status,
-          source,
-          timestamp: new Date(),
-        };
 
         await esClient.index({
           index: "apps",
-          document: doc
+          document: {
+            appName,
+            packageName,
+            sha256,
+            sizeMB,
+            permissions,
+            status,
+            source,
+            timestamp: new Date(),
+          },
         });
       }
 
