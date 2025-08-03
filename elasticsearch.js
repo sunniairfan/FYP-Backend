@@ -1,12 +1,14 @@
 const { Client } = require('@elastic/elasticsearch');
-const client = new Client({
+
+const esClient = new Client({
   node: 'https://localhost:9200',
   auth: {
     username: 'elastic',
-    password: '2*+P9PkehPT+t9iKB_gg'
+    password: 'O*lOfhB5*gWK=RdfOF=l', // 🔁 Use your real password here
   },
   tls: {
-    rejectUnauthorized: false
-  }
+    rejectUnauthorized: false, // Accept self-signed certificate
+  },
 });
-module.exports = client;
+
+module.exports = esClient;

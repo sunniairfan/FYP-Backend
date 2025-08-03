@@ -17,16 +17,17 @@ const receiveAppData = async (req, res) => {
     return res.status(400).json({ error: "Invalid or missing apps array" });
   }
 
-  try {
-    const results = [];
+  const results = [];
 
-    for (const app of apps) {
-      const { appName, packageName, sha256, sizeMB, permissions } = app;
-      if (!packageName || !sha256) continue;
+  for (const app of apps) {
+    const { appName, packageName, sha256, sizeMB, permissions } = app;
+    if (!packageName || !sha256) continue;
 
-      let status = "unknown";
-      let source = "Unknown";
+    let status = "unknown";
+    let source = "Unknown";
 
+    try {
+      // 🔍 Check if hash already exists in Elasticsearch
       const existing = await esClient.search({
         index: "apps",
         query: { match: { sha256 } },
@@ -36,8 +37,8 @@ const receiveAppData = async (req, res) => {
       if (existing.hits.hits.length > 0) {
         const doc = existing.hits.hits[0]._source;
         status = doc.status || "unknown";
-        source = doc.source || "Unknown";
-        console.log(`📦 Found in Elasticsearch → ${packageName}: ${status}`);
+        source = doc.source || "Elasticsearch";
+        console.log(`✅ Already indexed → ${packageName}: ${status} (${source})`);
       } else {
         if (isHashMalicious(sha256)) {
           status = "malicious";
@@ -45,16 +46,12 @@ const receiveAppData = async (req, res) => {
           console.log(`☠️ Found in SignatureDB → ${packageName}`);
         } else {
           const vtResult = await checkVirusTotal(sha256);
-          if (vtResult === "malicious") {
-            status = "malicious";
-            source = "VirusTotal";
-          } else {
-            status = vtResult;
-            source = "VirusTotal";
-          }
-          console.log(`🧪 VirusTotal → ${packageName}: ${status}`);
+          status = vtResult;
+          source = "VirusTotal";
+          console.log(`🧪 VirusTotal result → ${packageName}: ${status}`);
         }
 
+        // 💾 Save to Elasticsearch
         await esClient.index({
           index: "apps",
           document: {
@@ -68,16 +65,17 @@ const receiveAppData = async (req, res) => {
             timestamp: new Date(),
           },
         });
+        console.log(`📤 Indexed → ${packageName} (${status})`);
       }
 
       results.push({ packageName, status, source });
+    } catch (err) {
+      console.error(`❌ Error processing ${packageName}:`, err.message);
+      results.push({ packageName, status: "error", error: err.message });
     }
-
-    res.status(200).json({ message: "Apps uploaded", results });
-  } catch (error) {
-    console.error("❌ Upload error:", error.message);
-    res.status(500).json({ error: "Upload failed" });
   }
+
+  res.status(200).json({ message: "Apps processed", results });
 };
 
 module.exports = { receiveAppData };
