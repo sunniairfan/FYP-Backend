@@ -10,6 +10,9 @@ const knownHashes = fs.existsSync(signaturePath)
 const isHashMalicious = (hash) => knownHashes.includes(hash);
 
 const receiveAppData = async (req, res) => {
+  console.log('>>> Received upload request:', new Date().toISOString());
+  console.log('Request body:', req.body);
+
   const apps = req.body.apps;
   const esClient = req.app.get("esClient");
 
