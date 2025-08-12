@@ -10,8 +10,8 @@ const knownHashes = fs.existsSync(signaturePath)
 const isHashMalicious = (hash) => knownHashes.includes(hash);
 
 const receiveAppData = async (req, res) => {
-  console.log('>>> Received upload request:', new Date().toISOString());
-  console.log('Request body:', req.body);
+  console.log(">>> Received scan request:", new Date().toISOString());
+  console.log("Request body:", req.body);
 
   const apps = req.body.apps;
   const esClient = req.app.get("esClient");
@@ -24,37 +24,53 @@ const receiveAppData = async (req, res) => {
 
   for (const app of apps) {
     const { appName, packageName, sha256, sizeMB, permissions } = app;
+    // Support optional uploadedByUser flag from the frontend
+    const uploadedByUserFlag = app.uploadedByUser === true;
+
     if (!packageName || !sha256) continue;
 
     let status = "unknown";
     let source = "Unknown";
 
     try {
-      // 🔍 Check if hash already exists in Elasticsearch
       const existing = await esClient.search({
         index: "apps",
-        query: { match: { sha256 } },
         size: 1,
+        query: { term: { sha256: { value: sha256 } } },
       });
 
       if (existing.hits.hits.length > 0) {
-        const doc = existing.hits.hits[0]._source;
-        status = doc.status || "unknown";
-        source = doc.source || "Elasticsearch";
+        const doc = existing.hits.hits[0];
+        status = doc._source.status || "unknown";
+        source = doc._source.source || "Elasticsearch";
+
+        // Update timestamp
+        await esClient.update({
+          index: "apps",
+          id: doc._id,
+          body: { doc: { timestamp: new Date() } },
+        });
+
+        // If this upload is by user and doc wasn't flagged yet, mark it
+        if (uploadedByUserFlag && !doc._source.uploadedByUser) {
+          await esClient.update({
+            index: "apps",
+            id: doc._id,
+            body: { doc: { uploadedByUser: true } },
+          });
+        }
+
         console.log(`✅ Already indexed → ${packageName}: ${status} (${source})`);
       } else {
         if (isHashMalicious(sha256)) {
           status = "malicious";
           source = "SignatureDB";
-          console.log(`☠️ Found in SignatureDB → ${packageName}`);
         } else {
           const vtResult = await checkVirusTotal(sha256);
           status = vtResult;
           source = "VirusTotal";
-          console.log(`🧪 VirusTotal result → ${packageName}: ${status}`);
         }
 
-        // 💾 Save to Elasticsearch
         await esClient.index({
           index: "apps",
           document: {
@@ -66,9 +82,10 @@ const receiveAppData = async (req, res) => {
             status,
             source,
             timestamp: new Date(),
+            uploadedByUser: uploadedByUserFlag,
           },
         });
-        console.log(`📤 Indexed → ${packageName} (${status})`);
+        console.log(`📤 Indexed (Scan) → ${packageName} (${status})`);
       }
 
       results.push({ packageName, status, source });
@@ -78,7 +95,7 @@ const receiveAppData = async (req, res) => {
     }
   }
 
-  res.status(200).json({ message: "Apps processed", results });
+  res.status(200).json({ message: "Scan complete", results });
 };
 
 module.exports = { receiveAppData };
