@@ -8,7 +8,7 @@ router.get("/apps", async (req, res) => {
     const result = await esClient.search({
       index: "apps",
       size: 100,
-      query: { term: { uploadedByUser: true } }, // Boolean exact match
+      query: { term: { uploadedByUser: true } },
       sort: [{ timestamp: { order: "desc" } }],
     });
 
@@ -19,10 +19,80 @@ router.get("/apps", async (req, res) => {
       <head>
         <title>Uploaded Apps</title>
         <style>
-          table { border-collapse: collapse; width: 100%; }
-          th, td { border: 1px solid #ddd; padding: 8px; }
-          th { background-color: #f2f2f2; }
-          button { padding: 6px 12px; cursor: pointer; }
+          body {
+            background-color: #0d1b2a;
+            color: white;
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+          }
+          h1 {
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 2rem;
+            color: #ffffff;
+          }
+          table {
+            width: 100%;
+            border-spacing: 0;
+            border-collapse: separate;
+            border-radius: 12px;
+            overflow: hidden;
+            background-color: #1b263b;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+          }
+          thead {
+            background-color: #415a77;
+          }
+          th {
+            padding: 15px;
+            text-align: left;
+            font-size: 1rem;
+            font-weight: bold;
+            color: white;
+          }
+          td {
+            padding: 15px;
+            border-bottom: 1px solid #415a77;
+          }
+          tr:hover {
+            background-color: #273b54;
+          }
+          .status {
+            font-weight: bold;
+            padding: 6px 10px;
+            border-radius: 5px;
+            display: inline-block;
+          }
+          .status.unknown {
+            background-color: #ffb703;
+            color: #1b263b;
+          }
+          .status.safe {
+            background-color: #90ee90;
+            color: #1b263b;
+          }
+          .status.malicious {
+            background-color: #ff4d4d;
+            color: white;
+          }
+          button {
+            padding: 10px 16px;
+            background-color: #0077b6;
+            border: none;
+            border-radius: 6px;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background-color 0.3s ease, transform 0.2s ease;
+          }
+          button:hover {
+            background-color: #0096c7;
+            transform: scale(1.05);
+          }
+          form {
+            margin: 0;
+          }
         </style>
       </head>
       <body>
@@ -44,9 +114,13 @@ router.get("/apps", async (req, res) => {
         <tr>
           <td>${app.appName || ""}</td>
           <td>${app.packageName}</td>
-          <td>${app.status || "unknown"}</td>
           <td>
-            <form method="POST" action="/uploadapp/apps/${app.sha256}/upload-sandbox" style="margin:0;">
+            <span class="status ${app.status || "unknown"}">
+              ${app.status || "unknown"}
+            </span>
+          </td>
+          <td>
+            <form method="POST" action="/uploadapp/apps/${app.sha256}/upload-sandbox">
               <button type="submit">Upload to Sandbox</button>
             </form>
           </td>
@@ -88,14 +162,13 @@ router.post("/apps/:sha256/upload-sandbox", async (req, res) => {
 
     // Your MobSF sandbox upload logic here...
 
-    // Update exactly like your curl command
     await esClient.update({
       index: "apps",
       id: docId,
       body: {
         doc: {
           status: "sandbox_submitted",
-          uploadedByUser: true, // ensure it's marked as uploaded by user
+          uploadedByUser: true,
           timestamp: new Date(),
         },
       },
