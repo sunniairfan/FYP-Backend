@@ -2,13 +2,14 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { checkVirusTotal } = require("../utils/virusTotal");
+const mobsf = require("../utils/mobsf");
 
 const signaturePath = path.join(__dirname, "../signatureDB.json");
 const knownHashes = fs.existsSync(signaturePath)
   ? JSON.parse(fs.readFileSync(signaturePath, "utf-8"))
   : [];
 
-const uploadsDir = path.join(__dirname, "../uploads/apks");
+const uploadsDir = path.join(__dirname, "../Uploads/apks");
 
 // Create uploads directory if it doesn't exist
 if (!fs.existsSync(uploadsDir)) {
@@ -28,6 +29,72 @@ const calculateFileHash = (filePath) => {
     stream.on('error', (err) => reject(err));
   });
 };
+
+// Helper function to analyze app with MobSF
+async function analyzeApp(sha256, esClient) {
+  const searchRes = await esClient.search({
+    index: "apps",
+    size: 1,
+    query: { term: { sha256: { value: sha256 } } },
+  });
+
+  if (searchRes.hits.hits.length === 0) {
+    throw new Error("App not found");
+  }
+
+  const docId = searchRes.hits.hits[0]._id;
+  const appData = searchRes.hits.hits[0]._source;
+  const filePath = appData.apkFilePath;
+
+  if (!filePath || !fs.existsSync(filePath)) {
+    throw new Error("APK file not found");
+  }
+
+  const uploadRes = await mobsf.uploadToMobSF(filePath);
+  const md5Hash = uploadRes.hash;
+
+  await mobsf.scanWithMobSF(md5Hash);
+  const report = await mobsf.getJsonReport(md5Hash);
+
+  const dangerousPermissions = Object.entries(report.permissions || {})
+    .filter(([_, perm]) => perm.status === 'dangerous')
+    .map(([perm]) => perm);
+
+  const highRiskFindings = Object.entries(report.code_analysis || {})
+    .filter(([_, finding]) => finding.metadata.severity === 'high')
+    .length;
+
+  const malwareProbability = report.virus_total 
+    ? `${report.virus_total.malicious}/${report.virus_total.total}`
+    : 'unknown';
+
+  const mobsfAnalysis = {
+    security_score: report.security_score || 0,
+    dangerous_permissions: dangerousPermissions,
+    high_risk_findings: highRiskFindings,
+    malware_probability: malwareProbability
+  };
+
+  let status = 'unknown';
+  if (report.security_score >= 70) status = 'safe';
+  else if (report.security_score < 40) status = 'malicious';
+  else status = 'suspicious';
+
+  await esClient.update({
+    index: "apps",
+    id: docId,
+    body: {
+      doc: {
+        mobsfAnalysis,
+        lastMobsfAnalysis: new Date().toISOString(),
+        mobsfHash: md5Hash,
+        status
+      },
+    },
+  });
+
+  return { success: true, analysis: mobsfAnalysis, app: appData };
+}
 
 // APK Upload Controller
 const uploadApp = async (req, res) => {
@@ -147,8 +214,18 @@ const uploadApp = async (req, res) => {
       console.log(`📤 Indexed new app → ${app.packageName} (${status})`);
     }
 
+    // Trigger MobSF analysis in the background
+    setTimeout(async () => {
+      try {
+        await analyzeApp(uploadedFileHash, esClient);
+        console.log(`Background MobSF analysis completed for ${app.packageName} (${uploadedFileHash})`);
+      } catch (error) {
+        console.error(`Background MobSF analysis failed for ${app.packageName}:`, error);
+      }
+    }, 0);
+
     res.status(200).json({
-      message: "APK uploaded and analyzed successfully",
+      message: "APK uploaded and queued for MobSF analysis",
       app: {
         id: docId,
         packageName: app.packageName,
@@ -354,6 +431,16 @@ const deleteApp = async (req, res) => {
 
     const doc = searchRes.hits.hits[0];
     const appData = doc._source;
+
+    // Delete MobSF scan if it exists
+    if (appData.mobsfHash) {
+      try {
+        await mobsf.deleteScan(appData.mobsfHash);
+        console.log(`🗑️ Deleted MobSF scan for ${appData.packageName}`);
+      } catch (mobsfErr) {
+        console.error(`Failed to delete MobSF scan for ${appData.packageName}:`, mobsfErr.message);
+      }
+    }
 
     if (appData.apkFilePath && fs.existsSync(appData.apkFilePath)) {
       fs.unlinkSync(appData.apkFilePath);

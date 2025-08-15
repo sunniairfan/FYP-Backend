@@ -2,7 +2,9 @@ const express = require("express");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-
+const crypto = require("crypto");
+const mobsf = require("../utils/mobsf");
+console.log("Imported mobsf module:", mobsf);
 const router = express.Router();
 
 // Create uploads directory if it doesn't exist
@@ -48,11 +50,196 @@ const {
   deleteApp
 } = require("../controllers/appController");
 
+// Helper function to analyze app with MobSF
+async function analyzeApp(sha256, esClient) {
+  console.log(`[MobSF Analysis] Starting analysis for SHA256: ${sha256}`);
+  
+  try {
+    // Step 1: Find app in database
+    const searchRes = await esClient.search({
+      index: "apps",
+      size: 1,
+      query: { term: { sha256: { value: sha256 } } },
+    });
+
+    if (searchRes.hits.hits.length === 0) {
+      throw new Error("App not found in database");
+    }
+
+    const docId = searchRes.hits.hits[0]._id;
+    const appData = searchRes.hits.hits[0]._source;
+    const filePath = appData.apkFilePath;
+
+    console.log(`[MobSF Analysis] Found app: ${appData.packageName || 'Unknown'}`);
+    console.log(`[MobSF Analysis] APK file path: ${filePath}`);
+
+    // Step 2: Validate file exists
+    if (!filePath || !fs.existsSync(filePath)) {
+      throw new Error(`APK file not found at path: ${filePath}`);
+    }
+
+    const fileStats = fs.statSync(filePath);
+    console.log(`[MobSF Analysis] File size: ${(fileStats.size / 1024 / 1024).toFixed(2)} MB`);
+
+    // Step 3: Test MobSF connection first
+    const isConnected = await mobsf.checkConnection();
+    if (!isConnected) {
+      throw new Error("Cannot connect to MobSF service");
+    }
+
+    // Step 4: Upload to MobSF
+    console.log(`[MobSF Analysis] Uploading to MobSF...`);
+    const uploadRes = await mobsf.uploadToMobSF(filePath);
+    const md5Hash = uploadRes.hash;
+    
+    console.log(`[MobSF Analysis] Upload successful, MD5 hash: ${md5Hash}`);
+
+    // Step 5: Start scan
+    console.log(`[MobSF Analysis] Starting scan...`);
+    await mobsf.scanWithMobSF(md5Hash);
+    
+    console.log(`[MobSF Analysis] Scan completed, fetching report...`);
+
+    // Step 6: Get report with retry logic
+    let report;
+    let retryCount = 0;
+    const maxRetries = 3;
+    
+    while (retryCount < maxRetries) {
+      try {
+        report = await mobsf.getJsonReport(md5Hash);
+        break;
+      } catch (reportError) {
+        retryCount++;
+        console.log(`[MobSF Analysis] Report fetch attempt ${retryCount} failed, retrying...`);
+        if (retryCount >= maxRetries) {
+          throw new Error(`Failed to get report after ${maxRetries} attempts: ${reportError.message}`);
+        }
+        // Wait before retry
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+
+    console.log(`[MobSF Analysis] Report fetched successfully`);
+
+    // Step 7: Process report data safely
+    const dangerousPermissions = [];
+    if (report.permissions && typeof report.permissions === 'object') {
+      for (const [permName, permData] of Object.entries(report.permissions)) {
+        if (permData && permData.status === 'dangerous') {
+          dangerousPermissions.push(permName);
+        }
+      }
+    }
+
+    let highRiskFindings = 0;
+    if (report.code_analysis && typeof report.code_analysis === 'object') {
+      highRiskFindings = Object.entries(report.code_analysis)
+        .filter(([_, finding]) => {
+          return finding && 
+                 finding.metadata && 
+                 finding.metadata.severity === 'high';
+        }).length;
+    }
+
+    const malwareProbability = report.virus_total 
+      ? `${report.virus_total.malicious || 0}/${report.virus_total.total || 0}`
+      : 'unknown';
+
+    const securityScore = report.security_score || 0;
+
+    const mobsfAnalysis = {
+      security_score: securityScore,
+      dangerous_permissions: dangerousPermissions,
+      high_risk_findings: highRiskFindings,
+      malware_probability: malwareProbability,
+      scan_type: uploadRes.scan_type || 'unknown',
+      file_name: uploadRes.file_name || path.basename(filePath)
+    };
+
+    // Step 8: Determine status based on security score
+    let status = 'unknown';
+    if (securityScore >= 70) {
+      status = 'safe';
+    } else if (securityScore < 40) {
+      status = 'malicious';
+    } else {
+      status = 'suspicious';
+    }
+
+    console.log(`[MobSF Analysis] Analysis complete:`, {
+      security_score: securityScore,
+      status: status,
+      dangerous_permissions: dangerousPermissions.length,
+      high_risk_findings: highRiskFindings
+    });
+
+    // Step 9: Update database
+    await esClient.update({
+      index: "apps",
+      id: docId,
+      body: {
+        doc: {
+          mobsfAnalysis,
+          lastMobsfAnalysis: new Date().toISOString(),
+          mobsfHash: md5Hash,
+          status,
+          mobsfScanType: uploadRes.scan_type
+        },
+      },
+    });
+
+    console.log(`[MobSF Analysis] Database updated successfully for ${appData.packageName}`);
+
+    return { 
+      success: true, 
+      analysis: mobsfAnalysis, 
+      app: { ...appData, status },
+      mobsfHash: md5Hash
+    };
+
+  } catch (error) {
+    console.error(`[MobSF Analysis] Error analyzing ${sha256}:`, {
+      message: error.message,
+      stack: error.stack,
+      response: error.response?.data
+    });
+    
+    // Update database with error status
+    try {
+      const searchRes = await esClient.search({
+        index: "apps",
+        size: 1,
+        query: { term: { sha256: { value: sha256 } } },
+      });
+
+      if (searchRes.hits.hits.length > 0) {
+        const docId = searchRes.hits.hits[0]._id;
+        await esClient.update({
+          index: "apps",
+          id: docId,
+          body: {
+            doc: {
+              status: 'analysis_failed',
+              lastMobsfAnalysis: new Date().toISOString(),
+              mobsfError: error.message
+            },
+          },
+        });
+      }
+    } catch (updateError) {
+      console.error(`[MobSF Analysis] Failed to update error status:`, updateError.message);
+    }
+    
+    throw error;
+  }
+}
+
 // *** ADD THIS ROUTE - This is what your Android app is calling ***
 router.post(
   "/upload",  // This will be accessible at /uploadapp/upload
   upload.single("apk"), // Use single file upload since Android sends one APK file
-  (req, res) => {
+  async (req, res) => {
     // Add debug logging
     console.log(">>> Direct /upload route hit");
     console.log("File received:", req.file ? req.file.filename : "No file");
@@ -60,6 +247,22 @@ router.post(
     
     // Call the uploadApp controller
     uploadApp(req, res);
+
+    // Automatically send to MobSF for analysis in the background
+    if (req.file) {
+      setTimeout(async () => {
+        try {
+          const filePath = req.file.path;
+          const data = await fs.promises.readFile(filePath);
+          const sha256 = crypto.createHash('sha256').update(data).digest('hex');
+          const esClient = req.app.get("esClient");
+          await analyzeApp(sha256, esClient);
+          console.log(`Background MobSF analysis completed for ${sha256}`);
+        } catch (error) {
+          console.error(`Background MobSF analysis failed for uploaded file:`, error);
+        }
+      }, 0);
+    }
   }
 );
 
@@ -73,7 +276,59 @@ router.post(
   uploadApp
 );
 
-// GET /api/app/apps - View uploaded apps (HTML page)
+// MobSF Integration Routes
+// POST /analyze/:sha256 - Run MobSF analysis on uploaded app
+router.post("/analyze/:sha256", async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const sha256 = req.params.sha256;
+  try {
+    const result = await analyzeApp(sha256, esClient);
+    res.json(result);
+  } catch (err) {
+    console.error("MobSF Analysis Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /report/:sha256 - Get MobSF PDF report
+router.get("/report/:sha256", async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const sha256 = req.params.sha256;
+  try {
+    const searchRes = await esClient.search({
+      index: "apps",
+      size: 1,
+      query: { term: { sha256: { value: sha256 } } },
+    });
+
+    if (searchRes.hits.hits.length === 0) {
+      return res.status(404).send("App not found");
+    }
+
+    const appData = searchRes.hits.hits[0]._source;
+    const md5Hash = appData.mobsfHash;
+
+    if (!md5Hash) {
+      return res.status(400).send("No MobSF analysis available for this app");
+    }
+
+    const pdfStream = await mobsf.getPdfReport(md5Hash);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="mobsf_report_${sha256}.pdf"`);
+    pdfStream.pipe(res);
+  } catch (err) {
+    console.error("Failed to get MobSF report:", err.message);
+    res.status(500).send("Failed to get MobSF report");
+  }
+});
+
+// GET /mobsf/status - Check MobSF connection status
+router.get("/mobsf/status", async (req, res) => {
+  const connected = await mobsf.checkConnection();
+  res.json({ mobsf_connected: connected });
+});
+
+// GET /apps - View uploaded apps (HTML page)
 router.get("/apps", async (req, res) => {
   const esClient = req.app.get("esClient");
   try {
@@ -188,6 +443,10 @@ router.get("/apps", async (req, res) => {
             background-color: #e63946;
             color: white;
           }
+          .status.suspicious {
+            background-color: #f77f00;
+            color: white;
+          }
           .status.sandbox_submitted {
             background-color: #f77f00;
             color: white;
@@ -202,6 +461,20 @@ router.get("/apps", async (req, res) => {
             transition: all 0.3s ease;
             margin: 2px;
             font-size: 0.85rem;
+          }
+          .btn-mobsf {
+            background: linear-gradient(135deg, #6f42c1, #8e3af5);
+          }
+          .btn-mobsf:hover {
+            background: linear-gradient(135deg, #5a2a9f, #6f42c1);
+            transform: translateY(-1px);
+          }
+          .btn-report {
+            background: linear-gradient(135deg, #dc3545, #e74c3c);
+          }
+          .btn-report:hover {
+            background: linear-gradient(135deg, #c82333, #dc3545);
+            transform: translateY(-1px);
           }
           .btn-sandbox {
             background: linear-gradient(135deg, #0077b6, #0096c7);
@@ -223,6 +496,14 @@ router.get("/apps", async (req, res) => {
           .btn-delete:hover {
             background: linear-gradient(135deg, #d00000, #e63946);
             transform: translateY(-1px);
+          }
+          .btn-disabled {
+            background: #6c757d !important;
+            cursor: not-allowed !important;
+            opacity: 0.6;
+          }
+          .btn-disabled:hover {
+            transform: none !important;
           }
           form {
             margin: 0;
@@ -252,12 +533,54 @@ router.get("/apps", async (req, res) => {
             font-size: 0.8rem;
             color: #ffb703;
           }
+          .mobsf-info {
+            font-size: 0.8rem;
+            color: #90e0ef;
+            margin-top: 5px;
+          }
+          .security-score {
+            font-weight: bold;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+          }
+          .score-high {
+            background-color: #52b788;
+            color: white;
+          }
+          .score-medium {
+            background-color: #ffb703;
+            color: #1b263b;
+          }
+          .score-low {
+            background-color: #e63946;
+            color: white;
+          }
+          .mobsf-status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: bold;
+          }
+          .mobsf-connected {
+            background-color: #52b788;
+            color: white;
+          }
+          .mobsf-disconnected {
+            background-color: #e63946;
+            color: white;
+          }
         </style>
       </head>
       <body>
+        <div id="mobsf-status" class="mobsf-status">Checking MobSF...</div>
+        
         <div class="header">
           <h1>📱 Uploaded Apps</h1>
-          <div class="subtitle">Android Malware Detection System</div>
+          <div class="subtitle">Android Malware Detection System with MobSF Integration</div>
         </div>
         
         <div class="stats">
@@ -272,6 +595,10 @@ router.get("/apps", async (req, res) => {
           <div class="stat-card">
             <div class="stat-number">${apps.filter(app => app.status === 'safe').length}</div>
             <div class="stat-label">Safe</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number">${apps.filter(app => app.status === 'suspicious').length}</div>
+            <div class="stat-label">Suspicious</div>
           </div>
           <div class="stat-card">
             <div class="stat-number">${apps.filter(app => app.status === 'unknown').length}</div>
@@ -295,7 +622,7 @@ router.get("/apps", async (req, res) => {
               <th>App Details</th>
               <th>Package Info</th>
               <th>File Information</th>
-              <th>Status</th>
+              <th>Status & Analysis</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -306,6 +633,15 @@ router.get("/apps", async (req, res) => {
         const fileInfo = app.apkFileName ? `${app.apkFileName}` : 'No file uploaded';
         const uploadDate = new Date(app.timestamp).toLocaleDateString();
         const permissionCount = app.permissions ? app.permissions.length : 0;
+        const hasMobsfAnalysis = app.mobsfAnalysis && app.mobsfAnalysis.security_score !== undefined;
+        const hasApkFile = app.apkFilePath && app.apkFileName;
+        
+        // Security score styling
+        let scoreClass = 'score-medium';
+        if (hasMobsfAnalysis) {
+          if (app.mobsfAnalysis.security_score >= 70) scoreClass = 'score-high';
+          else if (app.mobsfAnalysis.security_score < 40) scoreClass = 'score-low';
+        }
         
         html += `
           <tr>
@@ -313,10 +649,13 @@ router.get("/apps", async (req, res) => {
               <div class="app-name">${app.appName || "Unknown App"}</div>
               <div class="file-info">Uploaded: ${uploadDate}</div>
               ${app.source ? `<div class="file-info">Source: ${app.source}</div>` : ''}
+              ${app.lastMobsfAnalysis ? `<div class="file-info">MobSF: ${new Date(app.lastMobsfAnalysis).toLocaleDateString()}</div>` : ''}
             </td>
             <td>
               <div class="package-name">${app.packageName}</div>
               ${permissionCount > 0 ? `<div class="permissions">${permissionCount} permissions</div>` : ''}
+              ${hasMobsfAnalysis && app.mobsfAnalysis.dangerous_permissions ? 
+                `<div class="permissions">⚠️ ${app.mobsfAnalysis.dangerous_permissions.length} dangerous perms</div>` : ''}
             </td>
             <td>
               <div class="file-info">${fileInfo}</div>
@@ -327,11 +666,30 @@ router.get("/apps", async (req, res) => {
               <span class="status ${app.status || "unknown"}">
                 ${app.status || "unknown"}
               </span>
+              ${hasMobsfAnalysis ? `
+                <div class="mobsf-info">
+                  <span class="security-score ${scoreClass}">Score: ${app.mobsfAnalysis.security_score}/100</span>
+                </div>
+                <div class="mobsf-info">
+                  Risk: ${app.mobsfAnalysis.malware_probability || 'unknown'}
+                  ${app.mobsfAnalysis.high_risk_findings > 0 ? `| 🔴 ${app.mobsfAnalysis.high_risk_findings} high risks` : ''}
+                </div>
+              ` : ''}
             </td>
             <td>
-              <form method="POST" action="/api/app/apps/${app.sha256}/upload-sandbox">
-                <button type="submit" class="btn-sandbox">Upload to Sandbox</button>
-              </form>
+              ${hasApkFile ? `
+                <button onclick="runMobsfAnalysis('${app.sha256}', '${app.packageName}')" class="btn-mobsf" title="Run MobSF Static Analysis">
+                  ${hasMobsfAnalysis ? 'Re-analyze' : 'Analyze'} MobSF
+                </button>
+              ` : ''}
+              ${hasMobsfAnalysis ? `
+                <button onclick="downloadMobsfReport('${app.sha256}')" class="btn-report" title="Download MobSF PDF Report">
+                  PDF Report
+                </button>
+              ` : ''}
+              <button onclick="uploadToSandbox('${app.sha256}', '${app.packageName}')" class="btn-sandbox">
+                Upload to Sandbox
+              </button>
               ${app.apkFileName ? `
                 <button onclick="downloadFile('${app.apkFileName}')" class="btn-download">
                   Download APK
@@ -353,13 +711,87 @@ router.get("/apps", async (req, res) => {
 
     html += `
         <script>
+          // Check MobSF status on page load
+          fetch(window.location.pathname.replace('/apps', '/mobsf/status'))
+            .then(response => response.json())
+            .then(data => {
+              const statusDiv = document.getElementById('mobsf-status');
+              if (data.mobsf_connected) {
+                statusDiv.textContent = 'MobSF: Connected ✓';
+                statusDiv.className = 'mobsf-status mobsf-connected';
+              } else {
+                statusDiv.textContent = 'MobSF: Disconnected ✗';
+                statusDiv.className = 'mobsf-status mobsf-disconnected';
+              }
+            })
+            .catch(error => {
+              const statusDiv = document.getElementById('mobsf-status');
+              statusDiv.textContent = 'MobSF: Error';
+              statusDiv.className = 'mobsf-status mobsf-disconnected';
+            });
+
+          function getBasePath() {
+            return window.location.pathname.replace('/apps', '');
+          }
+
           function downloadFile(fileName) {
-            window.location.href = '/api/app/download/' + encodeURIComponent(fileName);
+            window.location.href = getBasePath() + '/download/' + encodeURIComponent(fileName);
+          }
+          
+          function runMobsfAnalysis(sha256, packageName) {
+            if (confirm('Run MobSF static analysis for "' + packageName + '"? This may take several minutes.')) {
+              // Show loading state
+              event.target.textContent = 'Analyzing...';
+              event.target.disabled = true;
+              event.target.className = 'btn-mobsf btn-disabled';
+              
+              fetch(getBasePath() + '/analyze/' + sha256, { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                  if (data.error) {
+                    alert('MobSF Analysis Error: ' + data.error);
+                  } else {
+                    alert('MobSF analysis completed successfully!\\nSecurity Score: ' + 
+                          (data.analysis ? data.analysis.security_score + '/100' : 'N/A') + 
+                          '\\nStatus: ' + data.app.status);
+                    location.reload();
+                  }
+                })
+                .catch(error => {
+                  alert('Error: ' + error.message);
+                })
+                .finally(() => {
+                  event.target.textContent = 'Analyze MobSF';
+                  event.target.disabled = false;
+                  event.target.className = 'btn-mobsf';
+                });
+            }
+          }
+          
+          function downloadMobsfReport(sha256) {
+            window.location.href = getBasePath() + '/report/' + sha256;
+          }
+          
+          function uploadToSandbox(sha256, packageName) {
+            if (confirm('Upload "' + packageName + '" to sandbox for dynamic analysis?')) {
+              fetch(getBasePath() + '/apps/' + sha256 + '/upload-sandbox', { method: 'POST' })
+                .then(response => {
+                  if (response.ok) {
+                    alert('App uploaded to sandbox successfully!');
+                    location.reload();
+                  } else {
+                    alert('Error uploading to sandbox');
+                  }
+                })
+                .catch(error => {
+                  alert('Error: ' + error.message);
+                });
+            }
           }
           
           function deleteApp(sha256, packageName) {
-            if (confirm('Are you sure you want to delete "' + packageName + '"? This will also delete the APK file.')) {
-              fetch('/api/app/delete/' + sha256, { method: 'DELETE' })
+            if (confirm('Are you sure you want to delete "' + packageName + '"? This will also delete the APK file and MobSF analysis.')) {
+              fetch(getBasePath() + '/delete/' + sha256, { method: 'DELETE' })
                 .then(response => response.json())
                 .then(data => {
                   if (data.error) {
@@ -393,7 +825,7 @@ router.get("/apps", async (req, res) => {
   }
 });
 
-// POST /api/app/apps/:sha256/upload-sandbox - Upload to sandbox
+// POST /apps/:sha256/upload-sandbox - Upload to sandbox
 router.post("/apps/:sha256/upload-sandbox", async (req, res) => {
   const sha256 = req.params.sha256;
   const esClient = req.app.get("esClient");
@@ -413,7 +845,7 @@ router.post("/apps/:sha256/upload-sandbox", async (req, res) => {
     const docId = searchRes.hits.hits[0]._id;
     const appData = searchRes.hits.hits[0]._source;
 
-    // Placeholder for MobSF sandbox upload logic
+    // Placeholder for sandbox upload logic
     console.log(`📤 Uploading to sandbox: ${appData.apkFilePath}`);
 
     await esClient.update({
@@ -429,14 +861,14 @@ router.post("/apps/:sha256/upload-sandbox", async (req, res) => {
     });
 
     console.log(`✅ Marked app ${sha256} as sandbox_submitted`);
-    res.redirect("/api/app/apps");
+    res.redirect(req.originalUrl.replace(`/apps/${sha256}/upload-sandbox`, '/apps'));
   } catch (err) {
     console.error(`Failed to submit app ${sha256} to sandbox:`, err.message);
     res.status(500).send("Failed to submit to sandbox");
   }
 });
 
-// GET /api/app/list - Get apps as JSON (API endpoint)
+// GET /list - Get apps as JSON (API endpoint)
 router.get("/list", async (req, res) => {
   const esClient = req.app.get("esClient");
   try {
@@ -462,16 +894,16 @@ router.get("/list", async (req, res) => {
   }
 });
 
-// GET /api/app/details/:identifier - Get app details
+// GET /details/:identifier - Get app details
 router.get("/details/:identifier", getAppDetails);
 
-// GET /api/app/download/:fileName - Download APK file
+// GET /download/:fileName - Download APK file
 router.get("/download/:fileName", downloadApp);
 
-// DELETE /api/app/delete/:sha256 - Delete app and APK file
+// DELETE /delete/:sha256 - Delete app and APK file
 router.delete("/delete/:sha256", deleteApp);
 
-// POST /api/app/scan - Original scan endpoint (backward compatibility)
+// POST /scan - Original scan endpoint (backward compatibility)
 router.post("/scan", receiveAppData);
 
 module.exports = router;
