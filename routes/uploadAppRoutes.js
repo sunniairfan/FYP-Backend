@@ -7,6 +7,15 @@ const mobsf = require("../utils/mobsf");
 console.log("Imported mobsf module:", mobsf);
 const router = express.Router();
 
+// Helper function to generate dynamic index name based on current date
+function getDynamicIndexName() {
+  const today = new Date();
+  const day = String(today.getDate()).padStart(2, '0');
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const year = today.getFullYear();
+  return `mobile_apps_${day}-${month}-${year}`;
+}
+
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, "../uploads/apks");
 if (!fs.existsSync(uploadsDir)) {
@@ -55,9 +64,12 @@ async function analyzeApp(sha256, esClient) {
   console.log(`[MobSF Analysis] Starting analysis for SHA256: ${sha256}`);
   
   try {
-    // Step 1: Find app in database
+    // Step 1: Find app in database using dynamic index
+    const dynamicIndex = getDynamicIndexName();
+    console.log(`[MobSF Analysis] Using index: ${dynamicIndex}`);
+    
     const searchRes = await esClient.search({
-      index: "apps",
+      index: dynamicIndex,
       size: 1,
       query: { term: { sha256: { value: sha256 } } },
     });
@@ -174,9 +186,9 @@ async function analyzeApp(sha256, esClient) {
       high_risk_findings: highRiskFindings
     });
 
-    // Step 9: Update database
+    // Step 9: Update database using dynamic index
     await esClient.update({
-      index: "apps",
+      index: dynamicIndex,
       id: docId,
       body: {
         doc: {
@@ -205,10 +217,11 @@ async function analyzeApp(sha256, esClient) {
       response: error.response?.data
     });
     
-    // Update database with error status
+    // Update database with error status using dynamic index
     try {
+      const dynamicIndex = getDynamicIndexName();
       const searchRes = await esClient.search({
-        index: "apps",
+        index: dynamicIndex,
         size: 1,
         query: { term: { sha256: { value: sha256 } } },
       });
@@ -216,7 +229,7 @@ async function analyzeApp(sha256, esClient) {
       if (searchRes.hits.hits.length > 0) {
         const docId = searchRes.hits.hits[0]._id;
         await esClient.update({
-          index: "apps",
+          index: dynamicIndex,
           id: docId,
           body: {
             doc: {
@@ -295,8 +308,9 @@ router.get("/report/:sha256", async (req, res) => {
   const esClient = req.app.get("esClient");
   const sha256 = req.params.sha256;
   try {
+    const dynamicIndex = getDynamicIndexName();
     const searchRes = await esClient.search({
-      index: "apps",
+      index: dynamicIndex,
       size: 1,
       query: { term: { sha256: { value: sha256 } } },
     });
@@ -332,8 +346,11 @@ router.get("/mobsf/status", async (req, res) => {
 router.get("/apps", async (req, res) => {
   const esClient = req.app.get("esClient");
   try {
+    const dynamicIndex = getDynamicIndexName();
+    console.log(`[Apps Route] Using index: ${dynamicIndex}`);
+    
     const result = await esClient.search({
-      index: "apps",
+      index: dynamicIndex,
       size: 100,
       query: { term: { uploadedByUser: true } },
       sort: [{ timestamp: { order: "desc" } }],
@@ -369,6 +386,14 @@ router.get("/apps", async (req, res) => {
           .subtitle {
             color: #778da9;
             font-size: 1.1rem;
+          }
+          .current-index {
+            background: linear-gradient(135deg, #1b263b, #415a77);
+            padding: 10px 20px;
+            border-radius: 8px;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            color: #90e0ef;
           }
           .stats {
             display: flex;
@@ -581,6 +606,7 @@ router.get("/apps", async (req, res) => {
         <div class="header">
           <h1>📱 Uploaded Apps</h1>
           <div class="subtitle">Android Malware Detection System with MobSF Integration</div>
+          <div class="current-index">Current Index: ${dynamicIndex}</div>
         </div>
         
         <div class="stats">
@@ -831,8 +857,9 @@ router.post("/apps/:sha256/upload-sandbox", async (req, res) => {
   const esClient = req.app.get("esClient");
 
   try {
+    const dynamicIndex = getDynamicIndexName();
     const searchRes = await esClient.search({
-      index: "apps",
+      index: dynamicIndex,
       size: 1,
       query: { term: { sha256: { value: sha256 } } },
     });
@@ -849,7 +876,7 @@ router.post("/apps/:sha256/upload-sandbox", async (req, res) => {
     console.log(`📤 Uploading to sandbox: ${appData.apkFilePath}`);
 
     await esClient.update({
-      index: "apps",
+      index: dynamicIndex,
       id: docId,
       body: {
         doc: {
@@ -872,8 +899,9 @@ router.post("/apps/:sha256/upload-sandbox", async (req, res) => {
 router.get("/list", async (req, res) => {
   const esClient = req.app.get("esClient");
   try {
+    const dynamicIndex = getDynamicIndexName();
     const result = await esClient.search({
-      index: "apps",
+      index: dynamicIndex,
       size: 100,
       query: { term: { uploadedByUser: true } },
       sort: [{ timestamp: { order: "desc" } }],
