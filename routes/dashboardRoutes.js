@@ -11,11 +11,7 @@ const getIndexName = () => {
 };
 
 // Dashboard route
-<<<<<<< HEAD
 router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
-=======
-router.get('/dashboard', async (req, res) => {
->>>>>>> ba70027b68f450e80f8af90e3fb184442cf05434
   const esClient = req.app.get('esClient');
   let indexName = getIndexName();
   let currentDate = new Date().toISOString().split('T')[0];
@@ -306,11 +302,7 @@ router.get('/dashboard', async (req, res) => {
             color: #ef4444;
         }
 
-<<<<<<< HEAD
-        .modal-content .close-btn {
-=======
         .close-btn {
->>>>>>> ba70027b68f450e80f8af90e3fb184442cf05434
             background: #ef4444;
             border: none;
             color: white;
@@ -449,29 +441,26 @@ router.get('/dashboard', async (req, res) => {
             if (app) {
                 let permissions = [];
                 for (let i = 1; i <= 18; i++) {
-                    const perm = app[\`dangerousPermission\${i}\`];
+                    const perm = app['dangerousPermission' + i];
                     if (perm) permissions.push(perm);
                 }
 
-                const html = \`
-                    <h2>\${app.appName || 'Unknown App'}</h2>
-                    <p><strong>Package Name:</strong> \${app.packageName || 'N/A'}</p>
-                    <p><strong>SHA256:</strong> \${app.sha256 || 'N/A'}</p>
-                    <p><strong>Size:</strong> \${app.sizeMB ? app.sizeMB.toFixed(2) + ' MB' : 'N/A'}</p>
-                    <p><strong>Source:</strong> \${app.source || 'N/A'}</p>
-                    <p><strong>Status:</strong> <span class="status-badge status-\${app.status || 'unknown'}">\${app.status || 'Unknown'}</span></p>
-                    <p><strong>Detection Ratio:</strong> \${app.detectionRatio || 'N/A'}</p>
-                    <p><strong>Total Engines:</strong> \${app.totalEngines || 'N/A'}</p>
-                    <p><strong>Detected Engines:</strong> \${app.detectedEngines || 'N/A'}</p>
-                    <p><strong>Scan Time:</strong> \${app.scanTime ? new Date(app.scanTime).toLocaleString() : 'N/A'}</p>
-                    <p><strong>Timestamp:</strong> \${app.timestamp ? new Date(app.timestamp).toLocaleString() : 'N/A'}</p>
-                    <p><strong>Uploaded by User:</strong> \${app.uploadedByUser ? 'Yes' : 'No'}</p>
-                    <h3>Dangerous Permissions (\${permissions.length}):</h3>
-                    <ul>
-                        \${permissions.map(perm => \`<li>\${perm}</li>\`).join('')}
-                    </ul>
-                    <button class="close-btn" onclick="closeModal()">Close</button>
-                \`;
+                const html = '<h2>' + (app.appName || 'Unknown App') + '</h2>' +
+                    '<p><strong>Package Name:</strong> ' + (app.packageName || 'N/A') + '</p>' +
+                    '<p><strong>SHA256:</strong> ' + (app.sha256 || 'N/A') + '</p>' +
+                    '<p><strong>Size:</strong> ' + (app.sizeMB ? app.sizeMB.toFixed(2) + ' MB' : 'N/A') + '</p>' +
+                    '<p><strong>Source:</strong> ' + (app.source || 'N/A') + '</p>' +
+                    '<p><strong>Status:</strong> <span class="status-badge status-' + (app.status || 'unknown') + '">' + (app.status || 'Unknown') + '</span></p>' +
+                    '<p><strong>Detection Ratio:</strong> ' + (app.detectionRatio || 'N/A') + '</p>' +
+                    '<p><strong>Total Engines:</strong> ' + (app.totalEngines || 'N/A') + '</p>' +
+                    '<p><strong>Detected Engines:</strong> ' + (app.detectedEngines || 'N/A') + '</p>' +
+                    '<p><strong>Scan Time:</strong> ' + (app.scanTime ? new Date(app.scanTime).toLocaleString() : 'N/A') + '</p>' +
+                    '<p><strong>Timestamp:</strong> ' + (app.timestamp ? new Date(app.timestamp).toLocaleString() : 'N/A') + '</p>' +
+                    '<p><strong>Uploaded by User:</strong> ' + (app.uploadedByUser ? 'Yes' : 'No') + '</p>' +
+                    '<h3>Dangerous Permissions (' + permissions.length + '):</h3>' +
+                    '<ul>' + permissions.map(perm => '<li>' + perm + '</li>').join('') + '</ul>' +
+                    '<button class="close-btn" onclick="closeModal()">Close</button>';
+                    
                 document.getElementById('modalContent').innerHTML = html;
                 document.getElementById('detailsModal').style.display = 'flex';
             }

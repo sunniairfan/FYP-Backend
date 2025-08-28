@@ -4,11 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const MOBSF_URL = process.env.MOBSF_URL || 'http://localhost:8000';
-<<<<<<< HEAD
-const API_KEY = process.env.MOBSF_API_KEY || '725eb02ceb90afde63f8d859199e1b6069ceddcf10df916aa1951d955900db4c';
-=======
-const API_KEY = process.env.MOBSF_API_KEY || '0c5862cf5fe4926c1836b8800699283abaf18ca69f9db3b23738e81125fe39cf';
->>>>>>> ba70027b68f450e80f8af90e3fb184442cf05434
+const API_KEY = process.env.MOBSF_API_KEY || '7dbb309df5c8b0f2f66ce0c99fbd8c0cff11745879a98bfa95dcb11bbe29c96d';
 
 // Enhanced logging for debugging
 function log(message, data = null) {
