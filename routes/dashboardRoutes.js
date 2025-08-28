@@ -11,7 +11,11 @@ const getIndexName = () => {
 };
 
 // Dashboard route
+<<<<<<< HEAD
 router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
+=======
+router.get('/dashboard', async (req, res) => {
+>>>>>>> ba70027b68f450e80f8af90e3fb184442cf05434
   const esClient = req.app.get('esClient');
   let indexName = getIndexName();
   let currentDate = new Date().toISOString().split('T')[0];
@@ -302,7 +306,11 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
             color: #ef4444;
         }
 
+<<<<<<< HEAD
         .modal-content .close-btn {
+=======
+        .close-btn {
+>>>>>>> ba70027b68f450e80f8af90e3fb184442cf05434
             background: #ef4444;
             border: none;
             color: white;

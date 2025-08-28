@@ -16,6 +16,7 @@ function getDynamicIndexName() {
   return `mobile_apps_${day}-${month}-${year}`;
 }
 
+<<<<<<< HEAD
 // Helper function to generate index name for specific date
 function getIndexNameForDate(dateString) {
   const date = new Date(dateString);
@@ -25,6 +26,8 @@ function getIndexNameForDate(dateString) {
   return `mobile_apps_${day}-${month}-${year}`;
 }
 
+=======
+>>>>>>> ba70027b68f450e80f8af90e3fb184442cf05434
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, "../uploads/apks");
 if (!fs.existsSync(uploadsDir)) {
@@ -318,6 +321,7 @@ router.get("/report/:sha256", async (req, res) => {
   const sha256 = req.params.sha256;
   
   try {
+<<<<<<< HEAD
     // Get selected date from query parameter, default to today
     const selectedDate = req.query.date || new Date().toISOString().split('T')[0];
     const indexName = getIndexNameForDate(selectedDate);
@@ -326,6 +330,11 @@ router.get("/report/:sha256", async (req, res) => {
     
     const searchRes = await esClient.search({
       index: indexName,
+=======
+    const dynamicIndex = getDynamicIndexName();
+    const searchRes = await esClient.search({
+      index: dynamicIndex,
+>>>>>>> ba70027b68f450e80f8af90e3fb184442cf05434
       size: 1,
       query: { term: { sha256: { value: sha256 } } },
     });
@@ -381,6 +390,7 @@ router.get("/mobsf/status", async (req, res) => {
 router.get("/apps", async (req, res) => {
   const esClient = req.app.get("esClient");
   try {
+<<<<<<< HEAD
     // Get selected date from query parameter, default to today
     const selectedDate = req.query.date || new Date().toISOString().split('T')[0];
     const indexName = getIndexNameForDate(selectedDate);
@@ -405,6 +415,22 @@ router.get("/apps", async (req, res) => {
       console.log(`[Apps Route] Index ${indexName} not found or no data`);
       // Index might not exist for selected date, which is fine
     }
+=======
+    const dynamicIndex = getDynamicIndexName();
+    console.log(`[Apps Route] Using index: ${dynamicIndex}`);
+    
+    const result = await esClient.search({
+      index: dynamicIndex,
+      size: 100,
+      query: { term: { uploadedByUser: true } },
+      sort: [{ timestamp: { order: "desc" } }],
+    });
+
+    const apps = result.hits.hits.map((hit) => ({
+      ...hit._source,
+      id: hit._id
+    }));
+>>>>>>> ba70027b68f450e80f8af90e3fb184442cf05434
 
     let html = `
       <html>
@@ -432,6 +458,7 @@ router.get("/apps", async (req, res) => {
             color: #778da9;
             font-size: 1.1rem;
           }
+<<<<<<< HEAD
           .date-selector {
             background: linear-gradient(135deg, #1b263b, #415a77);
             padding: 15px 25px;
@@ -468,6 +495,8 @@ router.get("/apps", async (req, res) => {
             background: linear-gradient(135deg, #005577, #007bb6);
             transform: translateY(-1px);
           }
+=======
+>>>>>>> ba70027b68f450e80f8af90e3fb184442cf05434
           .current-index {
             background: linear-gradient(135deg, #1b263b, #415a77);
             padding: 10px 20px;
@@ -687,6 +716,7 @@ router.get("/apps", async (req, res) => {
         <div class="header">
           <h1>📱 Uploaded Apps</h1>
           <div class="subtitle">Android Malware Detection System with MobSF Integration</div>
+<<<<<<< HEAD
           
           <div class="date-selector">
             <label for="date-picker">Select Date:</label>
@@ -696,6 +726,9 @@ router.get("/apps", async (req, res) => {
           </div>
           
           <div class="current-index">Using Index: ${indexName}</div>
+=======
+          <div class="current-index">Current Index: ${dynamicIndex}</div>
+>>>>>>> ba70027b68f450e80f8af90e3fb184442cf05434
         </div>
         
         <div class="stats">
