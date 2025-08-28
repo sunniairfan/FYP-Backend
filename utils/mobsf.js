@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const MOBSF_URL = process.env.MOBSF_URL || 'http://localhost:8000';
-const API_KEY = process.env.MOBSF_API_KEY || '0a30ffe439e3a64a1e27dff625384b7422998f1bc38cdd0324739eeedbb0ff03';
+const API_KEY = process.env.MOBSF_API_KEY || '725eb02ceb90afde63f8d859199e1b6069ceddcf10df916aa1951d955900db4c';
 
 // Enhanced logging for debugging
 function log(message, data = null) {
@@ -198,11 +198,17 @@ async function getPdfReport(hash) {
           'Content-Type': 'application/x-www-form-urlencoded'
         },
         responseType: 'stream',
-        timeout: 60000 // 1 minute timeout
+        timeout: 120000 // 2 minutes timeout for PDF generation
       }
     );
 
-    log("PDF report fetched successfully");
+    log("PDF report stream created successfully");
+    
+    // Add error handling to the stream
+    response.data.on('error', (streamError) => {
+      logError('PDF stream error', streamError);
+    });
+
     return response.data;
   } catch (error) {
     logError(`Failed to get PDF report for hash: ${hash}`, error);

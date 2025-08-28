@@ -7,6 +7,24 @@ const mobsf = require("../utils/mobsf");
 console.log("Imported mobsf module:", mobsf);
 const router = express.Router();
 
+// Helper function to generate dynamic index name based on current date
+function getDynamicIndexName() {
+  const today = new Date();
+  const day = String(today.getDate()).padStart(2, '0');
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const year = today.getFullYear();
+  return `mobile_apps_${day}-${month}-${year}`;
+}
+
+// Helper function to generate index name for specific date
+function getIndexNameForDate(dateString) {
+  const date = new Date(dateString);
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  return `mobile_apps_${day}-${month}-${year}`;
+}
+
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, "../uploads/apks");
 if (!fs.existsSync(uploadsDir)) {
@@ -55,9 +73,12 @@ async function analyzeApp(sha256, esClient) {
   console.log(`[MobSF Analysis] Starting analysis for SHA256: ${sha256}`);
   
   try {
-    // Step 1: Find app in database
+    // Step 1: Find app in database using dynamic index
+    const dynamicIndex = getDynamicIndexName();
+    console.log(`[MobSF Analysis] Using index: ${dynamicIndex}`);
+    
     const searchRes = await esClient.search({
-      index: "apps",
+      index: dynamicIndex,
       size: 1,
       query: { term: { sha256: { value: sha256 } } },
     });
@@ -174,9 +195,9 @@ async function analyzeApp(sha256, esClient) {
       high_risk_findings: highRiskFindings
     });
 
-    // Step 9: Update database
+    // Step 9: Update database using dynamic index
     await esClient.update({
-      index: "apps",
+      index: dynamicIndex,
       id: docId,
       body: {
         doc: {
@@ -205,10 +226,11 @@ async function analyzeApp(sha256, esClient) {
       response: error.response?.data
     });
     
-    // Update database with error status
+    // Update database with error status using dynamic index
     try {
+      const dynamicIndex = getDynamicIndexName();
       const searchRes = await esClient.search({
-        index: "apps",
+        index: dynamicIndex,
         size: 1,
         query: { term: { sha256: { value: sha256 } } },
       });
@@ -216,7 +238,7 @@ async function analyzeApp(sha256, esClient) {
       if (searchRes.hits.hits.length > 0) {
         const docId = searchRes.hits.hits[0]._id;
         await esClient.update({
-          index: "apps",
+          index: dynamicIndex,
           id: docId,
           body: {
             doc: {
@@ -290,18 +312,26 @@ router.post("/analyze/:sha256", async (req, res) => {
   }
 });
 
-// GET /report/:sha256 - Get MobSF PDF report
+// GET /report/:sha256 - Get MobSF PDF report (FIXED)
 router.get("/report/:sha256", async (req, res) => {
   const esClient = req.app.get("esClient");
   const sha256 = req.params.sha256;
+  
   try {
+    // Get selected date from query parameter, default to today
+    const selectedDate = req.query.date || new Date().toISOString().split('T')[0];
+    const indexName = getIndexNameForDate(selectedDate);
+    
+    console.log(`[PDF Report] Looking for app ${sha256} in index: ${indexName}`);
+    
     const searchRes = await esClient.search({
-      index: "apps",
+      index: indexName,
       size: 1,
       query: { term: { sha256: { value: sha256 } } },
     });
 
     if (searchRes.hits.hits.length === 0) {
+      console.error(`[PDF Report] App not found: ${sha256}`);
       return res.status(404).send("App not found");
     }
 
@@ -309,16 +339,35 @@ router.get("/report/:sha256", async (req, res) => {
     const md5Hash = appData.mobsfHash;
 
     if (!md5Hash) {
+      console.error(`[PDF Report] No MobSF hash available for app: ${sha256}`);
       return res.status(400).send("No MobSF analysis available for this app");
     }
 
+    console.log(`[PDF Report] Fetching PDF for MD5: ${md5Hash}`);
+    
+    // Get PDF stream from MobSF
     const pdfStream = await mobsf.getPdfReport(md5Hash);
+    
+    // Set proper headers
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="mobsf_report_${sha256}.pdf"`);
+    
+    // Pipe the stream to response
     pdfStream.pipe(res);
+    
+    // Handle stream errors
+    pdfStream.on('error', (error) => {
+      console.error(`[PDF Report] Stream error:`, error);
+      if (!res.headersSent) {
+        res.status(500).send("Error generating PDF report");
+      }
+    });
+    
   } catch (err) {
-    console.error("Failed to get MobSF report:", err.message);
-    res.status(500).send("Failed to get MobSF report");
+    console.error("[PDF Report] Failed to get MobSF report:", err.message);
+    if (!res.headersSent) {
+      res.status(500).send("Failed to get MobSF report");
+    }
   }
 });
 
@@ -328,21 +377,34 @@ router.get("/mobsf/status", async (req, res) => {
   res.json({ mobsf_connected: connected });
 });
 
-// GET /apps - View uploaded apps (HTML page)
+// GET /apps - View uploaded apps (HTML page with calendar)
 router.get("/apps", async (req, res) => {
   const esClient = req.app.get("esClient");
   try {
-    const result = await esClient.search({
-      index: "apps",
-      size: 100,
-      query: { term: { uploadedByUser: true } },
-      sort: [{ timestamp: { order: "desc" } }],
-    });
-
-    const apps = result.hits.hits.map((hit) => ({
-      ...hit._source,
-      id: hit._id
-    }));
+    // Get selected date from query parameter, default to today
+    const selectedDate = req.query.date || new Date().toISOString().split('T')[0];
+    const indexName = getIndexNameForDate(selectedDate);
+    const isToday = selectedDate === new Date().toISOString().split('T')[0];
+    
+    console.log(`[Apps Route] Using index: ${indexName} for date: ${selectedDate}`);
+    
+    let apps = [];
+    try {
+      const result = await esClient.search({
+        index: indexName,
+        size: 100,
+        query: { term: { uploadedByUser: true } },
+        sort: [{ timestamp: { order: "desc" } }],
+      });
+      
+      apps = result.hits.hits.map((hit) => ({
+        ...hit._source,
+        id: hit._id
+      }));
+    } catch (indexError) {
+      console.log(`[Apps Route] Index ${indexName} not found or no data`);
+      // Index might not exist for selected date, which is fine
+    }
 
     let html = `
       <html>
@@ -369,6 +431,50 @@ router.get("/apps", async (req, res) => {
           .subtitle {
             color: #778da9;
             font-size: 1.1rem;
+          }
+          .date-selector {
+            background: linear-gradient(135deg, #1b263b, #415a77);
+            padding: 15px 25px;
+            border-radius: 10px;
+            margin: 15px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+          }
+          .date-selector label {
+            color: #90e0ef;
+            font-weight: bold;
+          }
+          .date-selector input[type="date"] {
+            background: #0d1b2a;
+            border: 2px solid #415a77;
+            border-radius: 6px;
+            padding: 8px 12px;
+            color: white;
+            font-size: 1rem;
+          }
+          .date-selector button {
+            background: linear-gradient(135deg, #0077b6, #0096c7);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+          }
+          .date-selector button:hover {
+            background: linear-gradient(135deg, #005577, #007bb6);
+            transform: translateY(-1px);
+          }
+          .current-index {
+            background: linear-gradient(135deg, #1b263b, #415a77);
+            padding: 10px 20px;
+            border-radius: 8px;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            color: #90e0ef;
           }
           .stats {
             display: flex;
@@ -581,6 +687,15 @@ router.get("/apps", async (req, res) => {
         <div class="header">
           <h1>📱 Uploaded Apps</h1>
           <div class="subtitle">Android Malware Detection System with MobSF Integration</div>
+          
+          <div class="date-selector">
+            <label for="date-picker">Select Date:</label>
+            <input type="date" id="date-picker" value="${selectedDate}" />
+            <button onclick="loadAppsForDate()">Load Apps</button>
+            ${!isToday ? `<button onclick="loadToday()">Today</button>` : ''}
+          </div>
+          
+          <div class="current-index">Using Index: ${indexName}</div>
         </div>
         
         <div class="stats">
@@ -610,8 +725,8 @@ router.get("/apps", async (req, res) => {
     if (apps.length === 0) {
       html += `
         <div class="no-apps">
-          <p>No apps uploaded yet.</p>
-          <p>Upload apps using the Android application to see them here.</p>
+          <p>No apps found for ${selectedDate}.</p>
+          <p>${isToday ? 'Upload apps using the Android application to see them here.' : 'Try selecting a different date or check today\'s uploads.'}</p>
         </div>
       `;
     } else {
@@ -635,7 +750,7 @@ router.get("/apps", async (req, res) => {
         const permissionCount = app.permissions ? app.permissions.length : 0;
         const hasMobsfAnalysis = app.mobsfAnalysis && app.mobsfAnalysis.security_score !== undefined;
         const hasApkFile = app.apkFilePath && app.apkFileName;
-        
+
         // Security score styling
         let scoreClass = 'score-medium';
         if (hasMobsfAnalysis) {
@@ -734,6 +849,17 @@ router.get("/apps", async (req, res) => {
             return window.location.pathname.replace('/apps', '');
           }
 
+          function loadAppsForDate() {
+            const selectedDate = document.getElementById('date-picker').value;
+            if (selectedDate) {
+              window.location.href = window.location.pathname + '?date=' + selectedDate;
+            }
+          }
+
+          function loadToday() {
+            window.location.href = window.location.pathname;
+          }
+
           function downloadFile(fileName) {
             window.location.href = getBasePath() + '/download/' + encodeURIComponent(fileName);
           }
@@ -769,7 +895,9 @@ router.get("/apps", async (req, res) => {
           }
           
           function downloadMobsfReport(sha256) {
-            window.location.href = getBasePath() + '/report/' + sha256;
+            const selectedDate = document.getElementById('date-picker').value;
+            const url = getBasePath() + '/report/' + sha256 + (selectedDate ? '?date=' + selectedDate : '');
+            window.location.href = url;
           }
           
           function uploadToSandbox(sha256, packageName) {
@@ -831,8 +959,9 @@ router.post("/apps/:sha256/upload-sandbox", async (req, res) => {
   const esClient = req.app.get("esClient");
 
   try {
+    const dynamicIndex = getDynamicIndexName();
     const searchRes = await esClient.search({
-      index: "apps",
+      index: dynamicIndex,
       size: 1,
       query: { term: { sha256: { value: sha256 } } },
     });
@@ -849,7 +978,7 @@ router.post("/apps/:sha256/upload-sandbox", async (req, res) => {
     console.log(`📤 Uploading to sandbox: ${appData.apkFilePath}`);
 
     await esClient.update({
-      index: "apps",
+      index: dynamicIndex,
       id: docId,
       body: {
         doc: {
@@ -872,8 +1001,9 @@ router.post("/apps/:sha256/upload-sandbox", async (req, res) => {
 router.get("/list", async (req, res) => {
   const esClient = req.app.get("esClient");
   try {
+    const dynamicIndex = getDynamicIndexName();
     const result = await esClient.search({
-      index: "apps",
+      index: dynamicIndex,
       size: 100,
       query: { term: { uploadedByUser: true } },
       sort: [{ timestamp: { order: "desc" } }],

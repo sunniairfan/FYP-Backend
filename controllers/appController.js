@@ -16,6 +16,15 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
+// Helper function to get dynamic index name
+const getIndexName = () => {
+  const today = new Date();
+  const day = String(today.getDate()).padStart(2, '0');
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const year = today.getFullYear();
+  return `mobile_apps_${day}-${month}-${year}`;
+};
+
 const isHashMalicious = (hash) => knownHashes.includes(hash);
 
 // Calculate SHA-256 hash of a file
@@ -30,10 +39,100 @@ const calculateFileHash = (filePath) => {
   });
 };
 
+// Helper function to separate dangerous permissions
+const separateDangerousPermissions = (permissions) => {
+  const dangerousPerms = permissions.filter(perm => {
+    const dangerousPermissions = [
+      'android.permission.CAMERA',
+      'android.permission.RECORD_AUDIO',
+      'android.permission.ACCESS_FINE_LOCATION',
+      'android.permission.ACCESS_COARSE_LOCATION',
+      'android.permission.ACCESS_BACKGROUND_LOCATION',
+      'android.permission.READ_CONTACTS',
+      'android.permission.WRITE_CONTACTS',
+      'android.permission.READ_SMS',
+      'android.permission.SEND_SMS',
+      'android.permission.RECEIVE_SMS',
+      'android.permission.READ_PHONE_STATE',
+      'android.permission.READ_PHONE_NUMBERS',
+      'android.permission.CALL_PHONE',
+      'android.permission.READ_CALL_LOG',
+      'android.permission.WRITE_CALL_LOG',
+      'android.permission.READ_EXTERNAL_STORAGE',
+      'android.permission.WRITE_EXTERNAL_STORAGE',
+      'android.permission.READ_MEDIA_IMAGES',
+      'android.permission.READ_MEDIA_VIDEO',
+      'android.permission.READ_MEDIA_AUDIO',
+      'android.permission.MANAGE_EXTERNAL_STORAGE',
+      'android.permission.GET_ACCOUNTS',
+      'android.permission.READ_CALENDAR',
+      'android.permission.WRITE_CALENDAR'
+    ];
+    return dangerousPermissions.includes(perm);
+  });
+
+  const result = {};
+  dangerousPerms.forEach((perm, index) => {
+    result[`dangerousPermission${index + 1}`] = perm;
+  });
+  
+  return result;
+};
+
+// Helper function to ensure index exists
+const ensureIndexExists = async (esClient) => {
+  const indexName = getIndexName();
+  try {
+    const existsResp = await esClient.indices.exists({ index: indexName });
+    const exists = existsResp.body === true || existsResp === true;
+    
+    if (!exists) {
+      await esClient.indices.create({
+        index: indexName,
+        mappings: {
+          properties: {
+            appName: { type: 'text' },
+            packageName: { type: 'keyword' },
+            sha256: { type: 'keyword' },
+            sizeMB: { type: 'float' },
+            status: { type: 'keyword' },
+            timestamp: { type: 'date' },
+            uploadedByUser: { type: 'boolean' },
+            dangerousPermission1: { type: 'keyword' },
+            dangerousPermission2: { type: 'keyword' },
+            dangerousPermission3: { type: 'keyword' },
+            dangerousPermission4: { type: 'keyword' },
+            dangerousPermission5: { type: 'keyword' },
+            dangerousPermission6: { type: 'keyword' },
+            dangerousPermission7: { type: 'keyword' },
+            dangerousPermission8: { type: 'keyword' },
+            dangerousPermission9: { type: 'keyword' },
+            dangerousPermission10: { type: 'keyword' },
+            dangerousPermission11: { type: 'keyword' },
+            dangerousPermission12: { type: 'keyword' },
+            source: { type: 'keyword' },
+            scanTime: { type: 'date' },
+            detectionRatio: { type: 'keyword' },
+            totalEngines: { type: 'integer' },
+            detectedEngines: { type: 'integer' },
+            apkFilePath: { type: 'keyword' },
+            apkFileName: { type: 'keyword' },
+            uploadSource: { type: 'keyword' }
+          }
+        }
+      });
+      console.log(`✅ Created index: ${indexName}`);
+    }
+  } catch (err) {
+    console.error('❌ Failed to ensure index exists:', err.message);
+  }
+};
+
 // Helper function to analyze app with MobSF
 async function analyzeApp(sha256, esClient) {
+  await ensureIndexExists(esClient);
   const searchRes = await esClient.search({
-    index: "apps",
+    index: getIndexName(),
     size: 1,
     query: { term: { sha256: { value: sha256 } } },
   });
@@ -81,7 +180,7 @@ async function analyzeApp(sha256, esClient) {
   else status = 'suspicious';
 
   await esClient.update({
-    index: "apps",
+    index: getIndexName(),
     id: docId,
     body: {
       doc: {
@@ -148,10 +247,15 @@ const uploadApp = async (req, res) => {
 
     let status = "unknown";
     let source = "Unknown";
+    let scanTime = null;
+    let detectionRatio = null;
+    let totalEngines = null;
+    let detectedEngines = null;
 
     // Check if app already exists in Elasticsearch
+    await ensureIndexExists(esClient);
     const existing = await esClient.search({
-      index: "apps",
+      index: getIndexName(),
       size: 1,
       query: { term: { sha256: { value: uploadedFileHash } } },
     });
@@ -165,7 +269,7 @@ const uploadApp = async (req, res) => {
       source = doc._source.source || "Elasticsearch";
 
       await esClient.update({
-        index: "apps",
+        index: getIndexName(),
         id: docId,
         body: {
           doc: {
@@ -187,27 +291,49 @@ const uploadApp = async (req, res) => {
       } else {
         console.log(`Checking VirusTotal for ${app.packageName}`);
         const vtResult = await checkVirusTotal(uploadedFileHash);
-        status = vtResult;
+        
+        // Extract VirusTotal scan information
+        if (vtResult && typeof vtResult === 'object') {
+          status = vtResult.status || "unknown";
+          scanTime = vtResult.scanTime || new Date().toISOString();
+          detectionRatio = vtResult.detectionRatio || "0/0";
+          totalEngines = vtResult.totalEngines || 0;
+          detectedEngines = vtResult.detectedEngines || 0;
+        } else {
+          status = vtResult || "unknown";
+        }
+        
         source = "VirusTotal";
         console.log(`VirusTotal result for ${app.packageName}: ${status}`);
       }
 
+      // Separate dangerous permissions
+      const dangerousPermissions = separateDangerousPermissions(app.permissions || []);
+
+      const docData = {
+        appName: app.appName,
+        packageName: app.packageName,
+        sha256: uploadedFileHash,
+        sizeMB: app.sizeMB,
+        ...dangerousPermissions, // Spread dangerous permissions as separate fields
+        status: status,
+        source: source,
+        timestamp: new Date(),
+        uploadedByUser: true,
+        apkFilePath: newFilePath,
+        apkFileName: newFileName,
+        uploadSource: "android_app"
+      };
+
+      // Add VirusTotal scan info if available
+      if (scanTime) docData.scanTime = scanTime;
+      if (detectionRatio) docData.detectionRatio = detectionRatio;
+      if (totalEngines) docData.totalEngines = totalEngines;
+      if (detectedEngines !== null) docData.detectedEngines = detectedEngines;
+
       const indexResponse = await esClient.index({
-        index: "apps",
-        document: {
-          appName: app.appName,
-          packageName: app.packageName,
-          sha256: uploadedFileHash,
-          sizeMB: app.sizeMB,
-          permissions: app.permissions || [],
-          status: status,
-          source: source,
-          timestamp: new Date(),
-          uploadedByUser: true,
-          apkFilePath: newFilePath,
-          apkFileName: newFileName,
-          uploadSource: "android_app"
-        },
+        index: getIndexName(),
+        document: docData,
       });
 
       docId = indexResponse._id;
@@ -277,10 +403,15 @@ const receiveAppData = async (req, res) => {
 
     let status = "unknown";
     let source = "Unknown";
+    let scanTime = null;
+    let detectionRatio = null;
+    let totalEngines = null;
+    let detectedEngines = null;
 
     try {
+      await ensureIndexExists(esClient);
       const existing = await esClient.search({
-        index: "apps",
+        index: getIndexName(),
         size: 1,
         query: { term: { sha256: { value: sha256 } } },
       });
@@ -291,14 +422,14 @@ const receiveAppData = async (req, res) => {
         source = doc._source.source || "Elasticsearch";
 
         await esClient.update({
-          index: "apps",
+          index: getIndexName(),
           id: doc._id,
           body: { doc: { timestamp: new Date() } },
         });
 
         if (uploadedByUserFlag && !doc._source.uploadedByUser) {
           await esClient.update({
-            index: "apps",
+            index: getIndexName(),
             id: doc._id,
             body: { doc: { uploadedByUser: true } },
           });
@@ -313,24 +444,46 @@ const receiveAppData = async (req, res) => {
         } else {
           console.log(`Checking VirusTotal for ${packageName}`);
           const vtResult = await checkVirusTotal(sha256);
-          status = vtResult;
+          
+          // Extract VirusTotal scan information
+          if (vtResult && typeof vtResult === 'object') {
+            status = vtResult.status || "unknown";
+            scanTime = vtResult.scanTime || new Date().toISOString();
+            detectionRatio = vtResult.detectionRatio || "0/0";
+            totalEngines = vtResult.totalEngines || 0;
+            detectedEngines = vtResult.detectedEngines || 0;
+          } else {
+            status = vtResult || "unknown";
+          }
+          
           source = "VirusTotal";
           console.log(`VirusTotal result for ${packageName}: ${status}`);
         }
 
+        // Separate dangerous permissions
+        const dangerousPermissions = separateDangerousPermissions(permissions || []);
+
+        const docData = {
+          appName,
+          packageName,
+          sha256,
+          sizeMB,
+          ...dangerousPermissions, // Spread dangerous permissions as separate fields
+          status,
+          source,
+          timestamp: new Date(),
+          uploadedByUser: uploadedByUserFlag,
+        };
+
+        // Add VirusTotal scan info if available
+        if (scanTime) docData.scanTime = scanTime;
+        if (detectionRatio) docData.detectionRatio = detectionRatio;
+        if (totalEngines) docData.totalEngines = totalEngines;
+        if (detectedEngines !== null) docData.detectedEngines = detectedEngines;
+
         await esClient.index({
-          index: "apps",
-          document: {
-            appName,
-            packageName,
-            sha256,
-            sizeMB,
-            permissions,
-            status,
-            source,
-            timestamp: new Date(),
-            uploadedByUser: uploadedByUserFlag,
-          },
+          index: getIndexName(),
+          document: docData,
         });
         console.log(`📤 Indexed (Scan) → ${packageName} (${status})`);
       }
@@ -352,13 +505,14 @@ const getAppDetails = async (req, res) => {
   const esClient = req.app.get("esClient");
 
   try {
+    await ensureIndexExists(esClient);
     let searchQuery;
     
     if (/^[a-fA-F0-9]{64}$/.test(identifier)) {
       searchQuery = { term: { sha256: { value: identifier } } };
     } else {
       const result = await esClient.get({
-        index: "apps",
+        index: getIndexName(),
         id: identifier
       });
       return res.status(200).json({
@@ -370,7 +524,7 @@ const getAppDetails = async (req, res) => {
     }
 
     const searchRes = await esClient.search({
-      index: "apps",
+      index: getIndexName(),
       size: 1,
       query: searchQuery,
     });
@@ -418,8 +572,9 @@ const deleteApp = async (req, res) => {
   const esClient = req.app.get("esClient");
 
   try {
+    await ensureIndexExists(esClient);
     const searchRes = await esClient.search({
-      index: "apps",
+      index: getIndexName(),
       size: 1,
       query: { term: { sha256: { value: sha256 } } },
     });
@@ -448,7 +603,7 @@ const deleteApp = async (req, res) => {
     }
 
     await esClient.delete({
-      index: "apps",
+      index: getIndexName(),
       id: doc._id
     });
 
