@@ -1,46 +1,38 @@
-const express = require('express');
-const dotenv = require('dotenv');
-const cors = require('cors');
-const session = require('express-session');
-const esClient = require('./elasticsearch');
-const appRoutes = require('./routes/appRoutes');
-const uploadAppRoutes = require('./routes/uploadAppRoutes');
-const dashboardRoutes = require('./routes/dashboardRoutes');
+const express = require("express");
+const dotenv = require("dotenv");
+const cors = require("cors");
+const session = require("express-session");
+const esClient = require("./elasticsearch");
+const appRoutes = require("./routes/appRoutes");
+const uploadAppRoutes = require("./routes/uploadAppRoutes");
+const dashboardRoutes = require("./routes/dashboardRoutes");
 
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
+// Set up session for user authentication
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "cyber-security-malware-detection-2024",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: false, // Set to true if using HTTPS
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    },
+  })
+);
+// Middleware for parsing requests and enabling CORS
+app.use(cors());  // Allow cross-origin requests
+app.use(express.json()); // Parse JSON bodies
+app.use(express.urlencoded({ extended: true })); // Parse form data
+app.set("esClient", esClient); // Attach Elasticsearch client to app
 
-// Session configuration
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'cyber-security-malware-detection-2024',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { 
-    secure: false, // Set to true if using HTTPS
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
-  }
-}));
-
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.set('esClient', esClient);
-
-// Authentication middleware
-const requireAuth = (req, res, next) => {
-  if (req.session && req.session.authenticated) {
-    return next();
-  } else {
-    return res.redirect('/login');
-  }
-};
-
-// Helper function to get dynamic index name
+// Create daily Elasticsearch index name (e.g., mobile_apps_02-09-2025)
 const getIndexName = () => {
   const today = new Date();
-  const day = String(today.getDate()).padStart(2, '0');
-  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, "0");
+  const month = String(today.getMonth() + 1).padStart(2, "0");
   const year = today.getFullYear();
   return `mobile_apps_${day}-${month}-${year}`;
 };
@@ -51,62 +43,161 @@ const ensureIndexExists = async (esClient) => {
   try {
     const existsResp = await esClient.indices.exists({ index: indexName });
     const exists = existsResp.body === true || existsResp === true;
-    
+
     if (!exists) {
       await esClient.indices.create({
         index: indexName,
         mappings: {
           properties: {
-            appName: { type: 'text' },
-            packageName: { type: 'keyword' },
-            sha256: { type: 'keyword' },
-            sizeMB: { type: 'float' },
-            status: { type: 'keyword' },
-            timestamp: { type: 'date' },
-            uploadedByUser: { type: 'boolean' },
-            dangerousPermission1: { type: 'keyword' },
-            dangerousPermission2: { type: 'keyword' },
-            dangerousPermission3: { type: 'keyword' },
-            dangerousPermission4: { type: 'keyword' },
-            dangerousPermission5: { type: 'keyword' },
-            dangerousPermission6: { type: 'keyword' },
-            dangerousPermission7: { type: 'keyword' },
-            dangerousPermission8: { type: 'keyword' },
-            dangerousPermission9: { type: 'keyword' },
-            dangerousPermission10: { type: 'keyword' },
-            dangerousPermission11: { type: 'keyword' },
-            dangerousPermission12: { type: 'keyword' },
-            dangerousPermission13: { type: 'keyword' },
-            dangerousPermission14: { type: 'keyword' },
-            dangerousPermission15: { type: 'keyword' },
-            dangerousPermission16: { type: 'keyword' },
-            dangerousPermission17: { type: 'keyword' },
-            dangerousPermission18: { type: 'keyword' },
-            source: { type: 'keyword' },
-            scanTime: { type: 'date' },
-            detectionRatio: { type: 'keyword' },
-            totalEngines: { type: 'integer' },
-            detectedEngines: { type: 'integer' },
-            apkFilePath: { type: 'keyword' },
-            apkFileName: { type: 'keyword' },
-            uploadSource: { type: 'keyword' }
-          }
-        }
+            appName: { type: "text" },
+            packageName: { type: "keyword" },
+            sha256: { type: "keyword" },
+            sizeMB: { type: "float" },
+            status: { type: "keyword" },
+            timestamp: { type: "date" },
+            uploadedByUser: { type: "boolean" },
+            dangerousPermission1: { type: "keyword" },
+            dangerousPermission2: { type: "keyword" },
+            dangerousPermission3: { type: "keyword" },
+            dangerousPermission4: { type: "keyword" },
+            dangerousPermission5: { type: "keyword" },
+            dangerousPermission6: { type: "keyword" },
+            dangerousPermission7: { type: "keyword" },
+            dangerousPermission8: { type: "keyword" },
+            dangerousPermission9: { type: "keyword" },
+            dangerousPermission10: { type: "keyword" },
+            dangerousPermission11: { type: "keyword" },
+            dangerousPermission12: { type: "keyword" },
+            dangerousPermission13: { type: "keyword" },
+            dangerousPermission14: { type: "keyword" },
+            dangerousPermission15: { type: "keyword" },
+            dangerousPermission16: { type: "keyword" },
+            dangerousPermission17: { type: "keyword" },
+            dangerousPermission18: { type: "keyword" },
+            source: { type: "keyword" },
+            scanTime: { type: "date" },
+            detectionRatio: { type: "keyword" },
+            totalEngines: { type: "integer" },
+            detectedEngines: { type: "integer" },
+            apkFilePath: { type: "keyword" },
+            apkFileName: { type: "keyword" },
+            uploadSource: { type: "keyword" },
+            mobsfAnalysis: { type: "object" },
+            lastMobsfAnalysis: { type: "date" },
+            mobsfHash: { type: "keyword" },
+            mobsfScanType: { type: "keyword" },
+            mobsfError: { type: "text" },
+          },
+        },
       });
       console.log(`✅ Created index: ${indexName}`);
     }
   } catch (err) {
-    console.error('❌ Failed to ensure index exists:', err.message);
+    console.error("❌ Failed to ensure index exists:", err.message);
   }
 };
+
+// Run index creation on startup
+app.set("ensureIndexExists", ensureIndexExists);
 
 // Ensure index exists and has mapping for uploadedByUser
 (async () => {
   await ensureIndexExists(esClient);
 })();
 
-// Login route
-app.get('/login', (req, res) => {
+// Authentication middleware for web routes
+const requireAuth = (req, res, next) => {
+  if (req.session && req.session.authenticated) {
+    return next();
+  } else {
+    return res.redirect("/login");
+  }
+};
+
+// Authentication middleware for API routes
+const requireAuthAPI = (req, res, next) => {
+  if (req.session && req.session.authenticated) {
+    return next();
+  } else {
+    return res.status(401).json({
+      success: false,
+      error: "Authentication required",
+      message: "Please login to access this resource",
+      authenticated: false,
+      results: {
+        authenticated: false,
+        status: "authentication_required",
+        error: "Please login to access this resource",
+      },
+    });
+  }
+};
+// API route to check login status
+app.get("/api/auth/status", (req, res) => {
+  res.json({
+    success: true,
+    authenticated: !!(req.session && req.session.authenticated),
+    username: req.session?.username || null,
+    results: {
+      authenticated: !!(req.session && req.session.authenticated),
+      username: req.session?.username || null,
+      status: req.session && req.session.authenticated ? "authenticated" : "not_authenticated",
+    },
+  });
+});
+// API route for login
+app.post("/api/auth/login", (req, res) => {
+  const { username, password } = req.body;
+
+  if (username === process.env.AUTH_USERNAME && password === process.env.AUTH_PASSWORD) {
+    req.session.authenticated = true;
+    req.session.username = username;
+    res.json({
+      success: true,
+      authenticated: true,
+      username: username,
+      message: "Login successful",
+      results: {
+        authenticated: true,
+        username: username,
+        status: "login_successful",
+      },
+    });
+  } else {
+    res.status(401).json({
+      success: false,
+      authenticated: false,
+      error: "Invalid credentials",
+      message: "Invalid username or password",
+      results: {
+        authenticated: false,
+        status: "login_failed",
+        error: "Invalid credentials",
+      },
+    });
+  }
+});
+// API route for logout
+app.post("/api/auth/logout", (req, res) => {
+  req.session.destroy((err) => {
+    if (err) {
+      console.error("Session destruction error:", err);
+      res.status(500).json({
+        success: false,
+        error: "Logout failed",
+      });
+    } else {
+      res.json({
+        success: true,
+        authenticated: false,
+        message: "Logout successful",
+      });
+    }
+  });
+});
+
+// Web Login page
+app.get("/login", (req, res) => {
   res.send(`
     <!DOCTYPE html>
     <html>
@@ -220,43 +311,43 @@ app.get('/login', (req, res) => {
           </div>
           <button type="submit" class="login-btn">🔐 ACCESS SYSTEM</button>
         </form>
-        ${req.query.error ? '<div class="error">⚠️ Invalid credentials. Access denied.</div>' : ''}
+        ${req.query.error ? '<div class="error">⚠️ Invalid credentials. Access denied.</div>' : ""}
       </div>
     </body>
     </html>
   `);
 });
 
-// Login POST route
-app.post('/login', (req, res) => {
+// Web login form submission
+app.post("/login", (req, res) => {
   const { username, password } = req.body;
-  
+
   if (username === process.env.AUTH_USERNAME && password === process.env.AUTH_PASSWORD) {
     req.session.authenticated = true;
     req.session.username = username;
-    res.redirect('/');
+    res.redirect("/");
   } else {
-    res.redirect('/login?error=1');
+    res.redirect("/login?error=1");
   }
 });
 
-// Logout route
-app.get('/logout', (req, res) => {
+// Web Logout route
+app.get("/logout", (req, res) => {
   req.session.destroy((err) => {
     if (err) {
-      console.error('Session destruction error:', err);
+      console.error("Session destruction error:", err);
     }
-    res.redirect('/login');
+    res.redirect("/login");
   });
 });
 
-// Protected Routes
-app.use('/dashboard', dashboardRoutes); // Remove requireAuth from dashboard
-app.use('/api/app', requireAuth, appRoutes);
-app.use('/uploadapp', requireAuth, uploadAppRoutes);
+// Mount routes
+app.use("/api/app", appRoutes); // Mobile API routes 
+app.use("/dashboard", requireAuth, dashboardRoutes); // Web dashboard routes
+app.use("/uploadapp", uploadAppRoutes); // Upload app routes 
 
-// Main route
-app.get('/', requireAuth, (req, res) => {
+// Main dashboard page (requires login)
+app.get("/", requireAuth, (req, res) => {
   res.send(`
     <!DOCTYPE html>
     <html>
@@ -452,10 +543,16 @@ app.get('/', requireAuth, (req, res) => {
     </html>
   `);
 });
-
-app.listen(PORT, '0.0.0.0', () => {
+// Start server and log endpoints
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server is running on http://localhost:${PORT}`);
   console.log(`🔐 Login at: http://localhost:${PORT}/login`);
   console.log(`📊 Dashboard available at: http://localhost:${PORT}/dashboard`);
   console.log(`📱 Upload manager at: http://localhost:${PORT}/uploadapp/apps`);
+  console.log(`🔌 API endpoints:`);
+  console.log(`   - Auth Status: http://localhost:${PORT}/api/auth/status`);
+  console.log(`   - API Login: http://localhost:${PORT}/api/auth/login`);
+  console.log(`   - API Logout: http://localhost:${PORT}/api/auth/logout`);
+  console.log(`   - Mobile Upload: http://localhost:${PORT}/uploadapp/upload (No Auth Required)`);
+  console.log(`   - Mobile Scan: http://localhost:${PORT}/api/app/upload (No Auth Required)`);
 });

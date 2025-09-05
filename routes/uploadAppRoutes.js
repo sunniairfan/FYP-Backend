@@ -2,16 +2,23 @@ const express = require("express");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-const crypto = require("crypto");
 const mobsf = require("../utils/mobsf");
-console.log("Imported mobsf module:", mobsf);
 const router = express.Router();
+
+// Middleware to require authentication for web routes
+const requireWebAuth = (req, res, next) => {
+  if (req.session && req.session.authenticated) {
+    return next();
+  } else {
+    return res.redirect("/login");
+  }
+};
 
 // Helper function to generate dynamic index name based on current date
 function getDynamicIndexName() {
   const today = new Date();
-  const day = String(today.getDate()).padStart(2, '0');
-  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, "0");
+  const month = String(today.getMonth() + 1).padStart(2, "0");
   const year = today.getFullYear();
   return `mobile_apps_${day}-${month}-${year}`;
 }
@@ -19,14 +26,14 @@ function getDynamicIndexName() {
 // Helper function to generate index name for specific date
 function getIndexNameForDate(dateString) {
   const date = new Date(dateString);
-  const day = String(date.getDate()).padStart(2, '0');
-  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
   const year = date.getFullYear();
   return `mobile_apps_${day}-${month}-${year}`;
 }
 
 // Create uploads directory if it doesn't exist
-const uploadsDir = path.join(__dirname, "../uploads/apks");
+const uploadsDir = path.join(__dirname, "../Uploads/apks");
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
@@ -34,13 +41,13 @@ if (!fs.existsSync(uploadsDir)) {
 // Configure multer for APK file uploads
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, uploadsDir);
+    cb(null, uploadsDir);  // Save files to uploadsDir
   },
   filename: function (req, file, cb) {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const uniqueName = `temp_${timestamp}_${file.originalname}`;
     cb(null, uniqueName);
-  }
+  },
 });
 
 const upload = multer({
@@ -48,24 +55,27 @@ const upload = multer({
   limits: {
     fileSize: 500 * 1024 * 1024, // 500MB limit
   },
+  // Allow only APK files
   fileFilter: function (req, file, cb) {
-    if (file.mimetype === 'application/vnd.android.package-archive' || 
-        file.originalname.toLowerCase().endsWith('.apk')) {
+    if (
+      file.mimetype === "application/vnd.android.package-archive" ||
+      file.originalname.toLowerCase().endsWith(".apk")
+    ) {
       cb(null, true);
     } else {
       console.error("Invalid file type:", file.mimetype);
-      cb(new Error('Only APK files are allowed'), false);
+      cb(new Error("Only APK files are allowed"), false);
     }
-  }
+  },
 });
 
-// Import controller functions
+// Import controller functions from appController.js
 const {
   receiveAppData,
   uploadApp,
   getAppDetails,
   downloadApp,
-  deleteApp
+  deleteApp,
 } = require("../controllers/appController");
 
 // Helper function to analyze app with MobSF
@@ -73,7 +83,6 @@ async function analyzeApp(sha256, esClient) {
   console.log(`[MobSF Analysis] Starting analysis for SHA256: ${sha256}`);
   
   try {
-    // Step 1: Find app in database using dynamic index
     const dynamicIndex = getDynamicIndexName();
     console.log(`[MobSF Analysis] Using index: ${dynamicIndex}`);
     
@@ -91,10 +100,9 @@ async function analyzeApp(sha256, esClient) {
     const appData = searchRes.hits.hits[0]._source;
     const filePath = appData.apkFilePath;
 
-    console.log(`[MobSF Analysis] Found app: ${appData.packageName || 'Unknown'}`);
+    console.log(`[MobSF Analysis] Found app: ${appData.packageName || "Unknown"}`);
     console.log(`[MobSF Analysis] APK file path: ${filePath}`);
 
-    // Step 2: Validate file exists
     if (!filePath || !fs.existsSync(filePath)) {
       throw new Error(`APK file not found at path: ${filePath}`);
     }
@@ -102,26 +110,22 @@ async function analyzeApp(sha256, esClient) {
     const fileStats = fs.statSync(filePath);
     console.log(`[MobSF Analysis] File size: ${(fileStats.size / 1024 / 1024).toFixed(2)} MB`);
 
-    // Step 3: Test MobSF connection first
     const isConnected = await mobsf.checkConnection();
     if (!isConnected) {
       throw new Error("Cannot connect to MobSF service");
     }
 
-    // Step 4: Upload to MobSF
     console.log(`[MobSF Analysis] Uploading to MobSF...`);
     const uploadRes = await mobsf.uploadToMobSF(filePath);
     const md5Hash = uploadRes.hash;
     
     console.log(`[MobSF Analysis] Upload successful, MD5 hash: ${md5Hash}`);
 
-    // Step 5: Start scan
     console.log(`[MobSF Analysis] Starting scan...`);
     await mobsf.scanWithMobSF(md5Hash);
     
     console.log(`[MobSF Analysis] Scan completed, fetching report...`);
-
-    // Step 6: Get report with retry logic
+// Fetch JSON report with retries
     let report;
     let retryCount = 0;
     const maxRetries = 3;
@@ -136,66 +140,56 @@ async function analyzeApp(sha256, esClient) {
         if (retryCount >= maxRetries) {
           throw new Error(`Failed to get report after ${maxRetries} attempts: ${reportError.message}`);
         }
-        // Wait before retry
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise((resolve) => setTimeout(resolve, 2000));
       }
     }
-
     console.log(`[MobSF Analysis] Report fetched successfully`);
-
-    // Step 7: Process report data safely
+// Extract dangerous permissions
     const dangerousPermissions = [];
-    if (report.permissions && typeof report.permissions === 'object') {
+    if (report.permissions && typeof report.permissions === "object") {
       for (const [permName, permData] of Object.entries(report.permissions)) {
-        if (permData && permData.status === 'dangerous') {
+        if (permData && permData.status === "dangerous") {
           dangerousPermissions.push(permName);
         }
       }
     }
-
+// Count high-risk findings
     let highRiskFindings = 0;
-    if (report.code_analysis && typeof report.code_analysis === 'object') {
-      highRiskFindings = Object.entries(report.code_analysis)
-        .filter(([_, finding]) => {
-          return finding && 
-                 finding.metadata && 
-                 finding.metadata.severity === 'high';
-        }).length;
+    if (report.code_analysis && typeof report.code_analysis === "object") {
+      highRiskFindings = Object.entries(report.code_analysis).filter(
+        ([_, finding]) => finding && finding.metadata && finding.metadata.severity === "high"
+      ).length;
     }
-
-    const malwareProbability = report.virus_total 
+// Get malware probability from VirusTotal data
+    const malwareProbability = report.virus_total
       ? `${report.virus_total.malicious || 0}/${report.virus_total.total || 0}`
-      : 'unknown';
-
+      : "unknown";
     const securityScore = report.security_score || 0;
-
+// Compile MobSF analysis results
     const mobsfAnalysis = {
       security_score: securityScore,
       dangerous_permissions: dangerousPermissions,
       high_risk_findings: highRiskFindings,
       malware_probability: malwareProbability,
-      scan_type: uploadRes.scan_type || 'unknown',
-      file_name: uploadRes.file_name || path.basename(filePath)
+      scan_type: uploadRes.scan_type || "unknown",
+      file_name: uploadRes.file_name || path.basename(filePath),
     };
-
-    // Step 8: Determine status based on security score
-    let status = 'unknown';
+// Determine app status based on security score
+    let status = "unknown";
     if (securityScore >= 70) {
-      status = 'safe';
+      status = "safe";
     } else if (securityScore < 40) {
-      status = 'malicious';
+      status = "malicious";
     } else {
-      status = 'suspicious';
+      status = "suspicious";
     }
-
     console.log(`[MobSF Analysis] Analysis complete:`, {
       security_score: securityScore,
       status: status,
       dangerous_permissions: dangerousPermissions.length,
-      high_risk_findings: highRiskFindings
+      high_risk_findings: highRiskFindings,
     });
-
-    // Step 9: Update database using dynamic index
+// Update Elasticsearch with analysis results
     await esClient.update({
       index: dynamicIndex,
       id: docId,
@@ -205,28 +199,26 @@ async function analyzeApp(sha256, esClient) {
           lastMobsfAnalysis: new Date().toISOString(),
           mobsfHash: md5Hash,
           status,
-          mobsfScanType: uploadRes.scan_type
+          mobsfScanType: uploadRes.scan_type,
         },
       },
     });
 
     console.log(`[MobSF Analysis] Database updated successfully for ${appData.packageName}`);
 
-    return { 
-      success: true, 
-      analysis: mobsfAnalysis, 
+    return {
+      success: true,
+      analysis: mobsfAnalysis,
       app: { ...appData, status },
-      mobsfHash: md5Hash
+      mobsfHash: md5Hash,
     };
-
   } catch (error) {
     console.error(`[MobSF Analysis] Error analyzing ${sha256}:`, {
       message: error.message,
       stack: error.stack,
-      response: error.response?.data
+      response: error.response?.data,
     });
-    
-    // Update database with error status using dynamic index
+// Update Elasticsearch with error status
     try {
       const dynamicIndex = getDynamicIndexName();
       const searchRes = await esClient.search({
@@ -242,9 +234,9 @@ async function analyzeApp(sha256, esClient) {
           id: docId,
           body: {
             doc: {
-              status: 'analysis_failed',
+              status: "analysis_failed",
               lastMobsfAnalysis: new Date().toISOString(),
-              mobsfError: error.message
+              mobsfError: error.message,
             },
           },
         });
@@ -256,36 +248,25 @@ async function analyzeApp(sha256, esClient) {
     throw error;
   }
 }
-
-// *** ADD THIS ROUTE - This is what your Android app is calling ***
+// Route: POST /upload (Mobile app upload, no auth required)
 router.post(
-  "/upload",  // This will be accessible at /uploadapp/upload
-  upload.single("apk"), // Use single file upload since Android sends one APK file
-  async (req, res) => {
-    // Add debug logging
-    console.log(">>> Direct /upload route hit");
-    console.log("File received:", req.file ? req.file.filename : "No file");
-    console.log("Body:", req.body);
-    
-    // Call the uploadApp controller
-    uploadApp(req, res);
-
-    // Automatically send to MobSF for analysis in the background
-    if (req.file) {
-      setTimeout(async () => {
-        try {
-          const filePath = req.file.path;
-          const data = await fs.promises.readFile(filePath);
-          const sha256 = crypto.createHash('sha256').update(data).digest('hex');
-          const esClient = req.app.get("esClient");
-          await analyzeApp(sha256, esClient);
-          console.log(`Background MobSF analysis completed for ${sha256}`);
-        } catch (error) {
-          console.error(`Background MobSF analysis failed for uploaded file:`, error);
-        }
-      }, 0);
-    }
-  }
+  "/upload",
+  (req, res, next) => {
+    console.log(">>> Files received:", req.files);
+    console.log(">>> Body:", req.body);
+    // Handle file uploads with multer
+    upload.fields([
+      { name: "apk", maxCount: 1 },
+      { name: "metadata", maxCount: 1 },
+    ])(req, res, (err) => {
+      if (err) {
+        console.error("Multer error:", err.message);
+        return res.status(400).json({ error: "File upload failed", details: err.message });
+      }
+      next();
+    });
+  },
+  uploadApp // Delegate to the uploadApp controller
 );
 
 // Routes for APK upload and management
@@ -293,13 +274,11 @@ router.post(
   "/api/app/upload",
   upload.fields([
     { name: "apk", maxCount: 1 },
-    { name: "metadata", maxCount: 1 }
+    { name: "metadata", maxCount: 1 },
   ]),
   uploadApp
 );
-
-// MobSF Integration Routes
-// POST /analyze/:sha256 - Run MobSF analysis on uploaded app
+// Route: POST /analyze/:sha256 (Trigger MobSF analysis, no auth required)
 router.post("/analyze/:sha256", async (req, res) => {
   const esClient = req.app.get("esClient");
   const sha256 = req.params.sha256;
@@ -312,14 +291,13 @@ router.post("/analyze/:sha256", async (req, res) => {
   }
 });
 
-// GET /report/:sha256 - Get MobSF PDF report (FIXED)
+// GET /report/:sha256 - Get MobSF PDF report - NO AUTH REQUIRED
 router.get("/report/:sha256", async (req, res) => {
   const esClient = req.app.get("esClient");
   const sha256 = req.params.sha256;
   
   try {
-    // Get selected date from query parameter, default to today
-    const selectedDate = req.query.date || new Date().toISOString().split('T')[0];
+    const selectedDate = req.query.date || new Date().toISOString().split("T")[0];
     const indexName = getIndexNameForDate(selectedDate);
     
     console.log(`[PDF Report] Looking for app ${sha256} in index: ${indexName}`);
@@ -345,24 +323,19 @@ router.get("/report/:sha256", async (req, res) => {
 
     console.log(`[PDF Report] Fetching PDF for MD5: ${md5Hash}`);
     
-    // Get PDF stream from MobSF
     const pdfStream = await mobsf.getPdfReport(md5Hash);
     
-    // Set proper headers
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="mobsf_report_${sha256}.pdf"`);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="mobsf_report_${sha256}.pdf"`);
     
-    // Pipe the stream to response
     pdfStream.pipe(res);
     
-    // Handle stream errors
-    pdfStream.on('error', (error) => {
+    pdfStream.on("error", (error) => {
       console.error(`[PDF Report] Stream error:`, error);
       if (!res.headersSent) {
         res.status(500).send("Error generating PDF report");
       }
     });
-    
   } catch (err) {
     console.error("[PDF Report] Failed to get MobSF report:", err.message);
     if (!res.headersSent) {
@@ -371,20 +344,19 @@ router.get("/report/:sha256", async (req, res) => {
   }
 });
 
-// GET /mobsf/status - Check MobSF connection status
+// GET /mobsf/status - Check MobSF connection status - NO AUTH REQUIRED
 router.get("/mobsf/status", async (req, res) => {
   const connected = await mobsf.checkConnection();
   res.json({ mobsf_connected: connected });
 });
 
-// GET /apps - View uploaded apps (HTML page with calendar)
-router.get("/apps", async (req, res) => {
+// GET /apps - View uploaded apps (HTML page with calendar) - REQUIRES WEB AUTH
+router.get("/apps", requireWebAuth, async (req, res) => {
   const esClient = req.app.get("esClient");
   try {
-    // Get selected date from query parameter, default to today
-    const selectedDate = req.query.date || new Date().toISOString().split('T')[0];
+    const selectedDate = req.query.date || new Date().toISOString().split("T")[0];
     const indexName = getIndexNameForDate(selectedDate);
-    const isToday = selectedDate === new Date().toISOString().split('T')[0];
+    const isToday = selectedDate === new Date().toISOString().split("T")[0];
     
     console.log(`[Apps Route] Using index: ${indexName} for date: ${selectedDate}`);
     
@@ -399,11 +371,10 @@ router.get("/apps", async (req, res) => {
       
       apps = result.hits.hits.map((hit) => ({
         ...hit._source,
-        id: hit._id
+        id: hit._id,
       }));
     } catch (indexError) {
       console.log(`[Apps Route] Index ${indexName} not found or no data`);
-      // Index might not exist for selected date, which is fine
     }
 
     let html = `
@@ -692,7 +663,7 @@ router.get("/apps", async (req, res) => {
             <label for="date-picker">Select Date:</label>
             <input type="date" id="date-picker" value="${selectedDate}" />
             <button onclick="loadAppsForDate()">Load Apps</button>
-            ${!isToday ? `<button onclick="loadToday()">Today</button>` : ''}
+            ${!isToday ? `<button onclick="loadToday()">Today</button>` : ""}
           </div>
           
           <div class="current-index">Using Index: ${indexName}</div>
@@ -704,19 +675,19 @@ router.get("/apps", async (req, res) => {
             <div class="stat-label">Total Apps</div>
           </div>
           <div class="stat-card">
-            <div class="stat-number">${apps.filter(app => app.status === 'malicious').length}</div>
+            <div class="stat-number">${apps.filter((app) => app.status === "malicious").length}</div>
             <div class="stat-label">Malicious</div>
           </div>
           <div class="stat-card">
-            <div class="stat-number">${apps.filter(app => app.status === 'safe').length}</div>
+            <div class="stat-number">${apps.filter((app) => app.status === "safe").length}</div>
             <div class="stat-label">Safe</div>
           </div>
           <div class="stat-card">
-            <div class="stat-number">${apps.filter(app => app.status === 'suspicious').length}</div>
+            <div class="stat-number">${apps.filter((app) => app.status === "suspicious").length}</div>
             <div class="stat-label">Suspicious</div>
           </div>
           <div class="stat-card">
-            <div class="stat-number">${apps.filter(app => app.status === 'unknown').length}</div>
+            <div class="stat-number">${apps.filter((app) => app.status === "unknown").length}</div>
             <div class="stat-label">Unknown</div>
           </div>
         </div>
@@ -726,7 +697,7 @@ router.get("/apps", async (req, res) => {
       html += `
         <div class="no-apps">
           <p>No apps found for ${selectedDate}.</p>
-          <p>${isToday ? 'Upload apps using the Android application to see them here.' : 'Try selecting a different date or check today\'s uploads.'}</p>
+          <p>${isToday ? "Upload apps using the Android application to see them here." : "Try selecting a different date or check today's uploads."}</p>
         </div>
       `;
     } else {
@@ -745,17 +716,16 @@ router.get("/apps", async (req, res) => {
       `;
 
       apps.forEach((app) => {
-        const fileInfo = app.apkFileName ? `${app.apkFileName}` : 'No file uploaded';
+        const fileInfo = app.apkFileName ? `${app.apkFileName}` : "No file uploaded";
         const uploadDate = new Date(app.timestamp).toLocaleDateString();
         const permissionCount = app.permissions ? app.permissions.length : 0;
         const hasMobsfAnalysis = app.mobsfAnalysis && app.mobsfAnalysis.security_score !== undefined;
         const hasApkFile = app.apkFilePath && app.apkFileName;
 
-        // Security score styling
-        let scoreClass = 'score-medium';
+        let scoreClass = "score-medium";
         if (hasMobsfAnalysis) {
-          if (app.mobsfAnalysis.security_score >= 70) scoreClass = 'score-high';
-          else if (app.mobsfAnalysis.security_score < 40) scoreClass = 'score-low';
+          if (app.mobsfAnalysis.security_score >= 70) scoreClass = "score-high";
+          else if (app.mobsfAnalysis.security_score < 40) scoreClass = "score-low";
         }
         
         html += `
@@ -763,19 +733,19 @@ router.get("/apps", async (req, res) => {
             <td>
               <div class="app-name">${app.appName || "Unknown App"}</div>
               <div class="file-info">Uploaded: ${uploadDate}</div>
-              ${app.source ? `<div class="file-info">Source: ${app.source}</div>` : ''}
-              ${app.lastMobsfAnalysis ? `<div class="file-info">MobSF: ${new Date(app.lastMobsfAnalysis).toLocaleDateString()}</div>` : ''}
+              ${app.source ? `<div class="file-info">Source: ${app.source}</div>` : ""}
+              ${app.lastMobsfAnalysis ? `<div class="file-info">MobSF: ${new Date(app.lastMobsfAnalysis).toLocaleDateString()}</div>` : ""}
             </td>
             <td>
               <div class="package-name">${app.packageName}</div>
-              ${permissionCount > 0 ? `<div class="permissions">${permissionCount} permissions</div>` : ''}
+              ${permissionCount > 0 ? `<div class="permissions">${permissionCount} permissions</div>` : ""}
               ${hasMobsfAnalysis && app.mobsfAnalysis.dangerous_permissions ? 
-                `<div class="permissions">⚠️ ${app.mobsfAnalysis.dangerous_permissions.length} dangerous perms</div>` : ''}
+                `<div class="permissions">⚠️ ${app.mobsfAnalysis.dangerous_permissions.length} dangerous perms</div>` : ""}
             </td>
             <td>
               <div class="file-info">${fileInfo}</div>
               <div class="file-info">Size: ${app.sizeMB?.toFixed(2) || 0} MB</div>
-              ${app.sha256 ? `<div class="file-info" title="${app.sha256}">SHA-256: ${app.sha256.substring(0, 16)}...</div>` : ''}
+              ${app.sha256 ? `<div class="file-info" title="${app.sha256}">SHA-256: ${app.sha256.substring(0, 16)}...</div>` : ""}
             </td>
             <td>
               <span class="status ${app.status || "unknown"}">
@@ -786,22 +756,22 @@ router.get("/apps", async (req, res) => {
                   <span class="security-score ${scoreClass}">Score: ${app.mobsfAnalysis.security_score}/100</span>
                 </div>
                 <div class="mobsf-info">
-                  Risk: ${app.mobsfAnalysis.malware_probability || 'unknown'}
-                  ${app.mobsfAnalysis.high_risk_findings > 0 ? `| 🔴 ${app.mobsfAnalysis.high_risk_findings} high risks` : ''}
+                  Risk: ${app.mobsfAnalysis.malware_probability || "unknown"}
+                  ${app.mobsfAnalysis.high_risk_findings > 0 ? `| 🔴 ${app.mobsfAnalysis.high_risk_findings} high risks` : ""}
                 </div>
-              ` : ''}
+              ` : ""}
             </td>
             <td>
               ${hasApkFile ? `
                 <button onclick="runMobsfAnalysis('${app.sha256}', '${app.packageName}')" class="btn-mobsf" title="Run MobSF Static Analysis">
-                  ${hasMobsfAnalysis ? 'Re-analyze' : 'Analyze'} MobSF
+                  ${hasMobsfAnalysis ? "Re-analyze" : "Analyze"} MobSF
                 </button>
-              ` : ''}
+              ` : ""}
               ${hasMobsfAnalysis ? `
                 <button onclick="downloadMobsfReport('${app.sha256}')" class="btn-report" title="Download MobSF PDF Report">
                   PDF Report
                 </button>
-              ` : ''}
+              ` : ""}
               <button onclick="uploadToSandbox('${app.sha256}', '${app.packageName}')" class="btn-sandbox">
                 Upload to Sandbox
               </button>
@@ -809,7 +779,7 @@ router.get("/apps", async (req, res) => {
                 <button onclick="downloadFile('${app.apkFileName}')" class="btn-download">
                   Download APK
                 </button>
-              ` : ''}
+              ` : ""}
               <button onclick="deleteApp('${app.sha256}', '${app.packageName}')" class="btn-delete">
                 Delete
               </button>
@@ -826,7 +796,6 @@ router.get("/apps", async (req, res) => {
 
     html += `
         <script>
-          // Check MobSF status on page load
           fetch(window.location.pathname.replace('/apps', '/mobsf/status'))
             .then(response => response.json())
             .then(data => {
@@ -866,7 +835,6 @@ router.get("/apps", async (req, res) => {
           
           function runMobsfAnalysis(sha256, packageName) {
             if (confirm('Run MobSF static analysis for "' + packageName + '"? This may take several minutes.')) {
-              // Show loading state
               event.target.textContent = 'Analyzing...';
               event.target.disabled = true;
               event.target.className = 'btn-mobsf btn-disabled';
@@ -953,8 +921,8 @@ router.get("/apps", async (req, res) => {
   }
 });
 
-// POST /apps/:sha256/upload-sandbox - Upload to sandbox
-router.post("/apps/:sha256/upload-sandbox", async (req, res) => {
+// POST /apps/:sha256/upload-sandbox - Upload to sandbox - REQUIRES WEB AUTH
+router.post("/apps/:sha256/upload-sandbox", requireWebAuth, async (req, res) => {
   const sha256 = req.params.sha256;
   const esClient = req.app.get("esClient");
 
@@ -974,9 +942,8 @@ router.post("/apps/:sha256/upload-sandbox", async (req, res) => {
     const docId = searchRes.hits.hits[0]._id;
     const appData = searchRes.hits.hits[0]._source;
 
-    // Placeholder for sandbox upload logic
     console.log(`📤 Uploading to sandbox: ${appData.apkFilePath}`);
-
+// Update app status in Elasticsearch
     await esClient.update({
       index: dynamicIndex,
       id: docId,
@@ -990,18 +957,18 @@ router.post("/apps/:sha256/upload-sandbox", async (req, res) => {
     });
 
     console.log(`✅ Marked app ${sha256} as sandbox_submitted`);
-    res.redirect(req.originalUrl.replace(`/apps/${sha256}/upload-sandbox`, '/apps'));
+    res.redirect(req.originalUrl.replace(`/apps/${sha256}/upload-sandbox`, "/apps"));
   } catch (err) {
     console.error(`Failed to submit app ${sha256} to sandbox:`, err.message);
     res.status(500).send("Failed to submit to sandbox");
   }
 });
-
-// GET /list - Get apps as JSON (API endpoint)
+// Route: GET /list (Get apps as JSON, no auth required)
 router.get("/list", async (req, res) => {
   const esClient = req.app.get("esClient");
   try {
     const dynamicIndex = getDynamicIndexName();
+    // Search for user-uploaded apps
     const result = await esClient.search({
       index: dynamicIndex,
       size: 100,
@@ -1011,12 +978,12 @@ router.get("/list", async (req, res) => {
 
     const apps = result.hits.hits.map((hit) => ({
       id: hit._id,
-      ...hit._source
+      ...hit._source,
     }));
 
     res.status(200).json({
       total: apps.length,
-      apps: apps
+      apps: apps,
     });
   } catch (err) {
     console.error("Failed to fetch apps:", err.message);
@@ -1024,16 +991,15 @@ router.get("/list", async (req, res) => {
   }
 });
 
-// GET /details/:identifier - Get app details
+// GET /details/:identifier - Get app details - NO AUTH REQUIRED
 router.get("/details/:identifier", getAppDetails);
 
-// GET /download/:fileName - Download APK file
-router.get("/download/:fileName", downloadApp);
+// GET /download/:fileName - Download APK file - REQUIRES WEB AUTH
+router.get("/download/:fileName", requireWebAuth, downloadApp);
 
-// DELETE /delete/:sha256 - Delete app and APK file
-router.delete("/delete/:sha256", deleteApp);
+// DELETE /delete/:sha256 - Delete app and APK file - REQUIRES WEB AUTH
+router.delete("/delete/:sha256", requireWebAuth, deleteApp);
 
-// POST /scan - Original scan endpoint (backward compatibility)
+// POST /scan - Original scan endpoint (backward compatibility) - NO AUTH REQUIRED
 router.post("/scan", receiveAppData);
-
-module.exports = router;
+module.exports = router; // Export router

@@ -2,14 +2,14 @@ const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
-
+// MobSF server URL and API key from environment variables or defaults
 const MOBSF_URL = process.env.MOBSF_URL || 'http://localhost:8000';
-const API_KEY = process.env.MOBSF_API_KEY || '7dbb309df5c8b0f2f66ce0c99fbd8c0cff11745879a98bfa95dcb11bbe29c96d';
-
+const API_KEY = process.env.MOBSF_API_KEY || '9dd7905482cb2a5de781e1a9d3b408ba034a8f1cc510ecdcb3e0e2973d234552';
 // Enhanced logging for debugging
 function log(message, data = null) {
   console.log(`[MobSF] ${message}`, data ? JSON.stringify(data, null, 2) : '');
 }
+// Log errors with details
 
 function logError(message, error) {
   console.error(`[MobSF Error] ${message}:`, {
@@ -19,10 +19,10 @@ function logError(message, error) {
     data: error.response?.data,
     url: error.config?.url,
     method: error.config?.method,
-    requestBody: error.config?.data // Log the sent body for debugging
+    requestBody: error.config?.data 
   });
 }
-
+// Check connection to MobSF server
 async function checkConnection() {
   try {
     log("Checking MobSF connection...");
@@ -37,7 +37,7 @@ async function checkConnection() {
     return false;
   }
 }
-
+// Upload a file to MobSF
 async function uploadToMobSF(filePath) {
   try {
     // Validate file exists and is readable
@@ -75,7 +75,7 @@ async function uploadToMobSF(filePath) {
         'Authorization': '[HIDDEN]'
       }
     });
-
+    // Send upload request
     const response = await axios.post(`${MOBSF_URL}/api/v1/upload`, form, {
       headers: {
         ...formHeaders,
@@ -98,17 +98,14 @@ async function uploadToMobSF(filePath) {
     throw error;
   }
 }
-
+// Start a scan for a file using its hash
 async function scanWithMobSF(hash) {
   try {
     log(`Starting MobSF scan for hash: ${hash}`);
     
     const params = new URLSearchParams();
     params.append('hash', hash);
-    // Optionally add re_scan if needed (e.g., for re-scanning)
-    // params.append('re_scan', '0'); // Uncomment if you want to explicitly set re_scan
-
-    log('Scan request details:', {
+     log('Scan request details:', {
       url: `${MOBSF_URL}/api/v1/scan`,
       body: params.toString(),
       headers: {
@@ -116,7 +113,7 @@ async function scanWithMobSF(hash) {
         'Content-Type': 'application/x-www-form-urlencoded'
       }
     });
-
+    // Send scan request
     const response = await axios.post(
       `${MOBSF_URL}/api/v1/scan`,
       params,
@@ -128,7 +125,7 @@ async function scanWithMobSF(hash) {
         timeout: 600000 // 10 minutes timeout for scanning
       }
     );
-
+    
     log('Scan completed', response.data);
     return response.data;
   } catch (error) {
@@ -136,14 +133,14 @@ async function scanWithMobSF(hash) {
     throw error;
   }
 }
-
+// Get JSON report for a scan
 async function getJsonReport(hash) {
   try {
     log(`Fetching JSON report for hash: ${hash}`);
     
     const params = new URLSearchParams();
     params.append('hash', hash);
-
+// Send JSON report request
     log('JSON report request details:', {
       url: `${MOBSF_URL}/api/v1/report_json`,
       body: params.toString(),
@@ -152,7 +149,7 @@ async function getJsonReport(hash) {
         'Content-Type': 'application/x-www-form-urlencoded'
       }
     });
-
+ 
     const response = await axios.post(
       `${MOBSF_URL}/api/v1/report_json`,
       params,
@@ -172,7 +169,7 @@ async function getJsonReport(hash) {
     throw error;
   }
 }
-
+// Get PDF report for a scan
 async function getPdfReport(hash) {
   try {
     log(`Fetching PDF report for hash: ${hash}`);
@@ -188,7 +185,7 @@ async function getPdfReport(hash) {
         'Content-Type': 'application/x-www-form-urlencoded'
       }
     });
-
+// Send PDF report request
     const response = await axios.post(
       `${MOBSF_URL}/api/v1/download_pdf`,
       params,
@@ -215,7 +212,7 @@ async function getPdfReport(hash) {
     throw error;
   }
 }
-
+// Delete a scan from MobSF
 async function deleteScan(hash) {
   try {
     log(`Deleting scan for hash: ${hash}`);
@@ -231,7 +228,7 @@ async function deleteScan(hash) {
         'Content-Type': 'application/x-www-form-urlencoded'
       }
     });
-
+// Send delete request
     const response = await axios.post(
       `${MOBSF_URL}/api/v1/delete_scan`,
       params,
@@ -314,7 +311,7 @@ async function testMobSFConnection() {
     return false;
   }
 }
-
+// Log module initialization
 log("MobSF module loaded", {
   MOBSF_URL,
   API_KEY_SET: !!API_KEY,
