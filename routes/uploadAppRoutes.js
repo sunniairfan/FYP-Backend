@@ -3,6 +3,7 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const mobsf = require("../utils/mobsf");
+const { analyzeFileWithVirusTotal } = require("../utils/virusTotal");
 const router = express.Router();
 
 // Middleware to require authentication for web routes
@@ -125,7 +126,6 @@ async function analyzeApp(sha256, esClient) {
     await mobsf.scanWithMobSF(md5Hash);
     
     console.log(`[MobSF Analysis] Scan completed, fetching report...`);
-// Fetch JSON report with retries
     let report;
     let retryCount = 0;
     const maxRetries = 3;
@@ -144,7 +144,7 @@ async function analyzeApp(sha256, esClient) {
       }
     }
     console.log(`[MobSF Analysis] Report fetched successfully`);
-// Extract dangerous permissions
+
     const dangerousPermissions = [];
     if (report.permissions && typeof report.permissions === "object") {
       for (const [permName, permData] of Object.entries(report.permissions)) {
@@ -153,28 +153,24 @@ async function analyzeApp(sha256, esClient) {
         }
       }
     }
-// Count high-risk findings
+
     let highRiskFindings = 0;
     if (report.code_analysis && typeof report.code_analysis === "object") {
       highRiskFindings = Object.entries(report.code_analysis).filter(
         ([_, finding]) => finding && finding.metadata && finding.metadata.severity === "high"
       ).length;
     }
-// Get malware probability from VirusTotal data
-    const malwareProbability = report.virus_total
-      ? `${report.virus_total.malicious || 0}/${report.virus_total.total || 0}`
-      : "unknown";
+
     const securityScore = report.security_score || 0;
-// Compile MobSF analysis results
+
     const mobsfAnalysis = {
       security_score: securityScore,
       dangerous_permissions: dangerousPermissions,
       high_risk_findings: highRiskFindings,
-      malware_probability: malwareProbability,
       scan_type: uploadRes.scan_type || "unknown",
       file_name: uploadRes.file_name || path.basename(filePath),
     };
-// Determine app status based on security score
+
     let status = "unknown";
     if (securityScore >= 70) {
       status = "safe";
@@ -183,13 +179,14 @@ async function analyzeApp(sha256, esClient) {
     } else {
       status = "suspicious";
     }
+
     console.log(`[MobSF Analysis] Analysis complete:`, {
       security_score: securityScore,
       status: status,
       dangerous_permissions: dangerousPermissions.length,
       high_risk_findings: highRiskFindings,
     });
-// Update Elasticsearch with analysis results
+
     await esClient.update({
       index: dynamicIndex,
       id: docId,
@@ -218,7 +215,7 @@ async function analyzeApp(sha256, esClient) {
       stack: error.stack,
       response: error.response?.data,
     });
-// Update Elasticsearch with error status
+
     try {
       const dynamicIndex = getDynamicIndexName();
       const searchRes = await esClient.search({
@@ -248,13 +245,108 @@ async function analyzeApp(sha256, esClient) {
     throw error;
   }
 }
+
+// Helper function to analyze app with VirusTotal
+async function analyzeAppWithVirusTotal(sha256, esClient) {
+  console.log(`[VirusTotal Analysis] Starting analysis for SHA256: ${sha256}`);
+  
+  try {
+    const dynamicIndex = getDynamicIndexName();
+    const searchRes = await esClient.search({
+      index: dynamicIndex,
+      size: 1,
+      query: { term: { sha256: { value: sha256 } } },
+    });
+
+    if (searchRes.hits.hits.length === 0) {
+      throw new Error("App not found in database");
+    }
+
+    const docId = searchRes.hits.hits[0]._id;
+    const appData = searchRes.hits.hits[0]._source;
+    const filePath = appData.apkFilePath;
+
+    if (!filePath || !fs.existsSync(filePath)) {
+      throw new Error(`APK file not found at path: ${filePath}`);
+    }
+
+    const fileStats = fs.statSync(filePath);
+    console.log(`[VirusTotal Analysis] File size: ${(fileStats.size / 1024 / 1024).toFixed(2)} MB`);
+
+    const vtResult = await analyzeFileWithVirusTotal(filePath);
+    
+    console.log(`[VirusTotal Analysis] Analysis complete:`, {
+      status: vtResult.status,
+      detectionRatio: vtResult.detectionRatio,
+      maliciousCount: vtResult.maliciousCount,
+      suspiciousCount: vtResult.suspiciousCount,
+    });
+
+    await esClient.update({
+      index: dynamicIndex,
+      id: docId,
+      body: {
+        doc: {
+          virusTotalAnalysis: {
+            status: vtResult.status,
+            detectionRatio: vtResult.detectionRatio,
+            totalEngines: vtResult.totalEngines,
+            detectedEngines: vtResult.detectedEngines,
+            maliciousCount: vtResult.maliciousCount,
+            suspiciousCount: vtResult.suspiciousCount,
+            scanTime: vtResult.scanTime,
+            analysisId: vtResult.analysisId,
+          },
+          lastVirusTotalAnalysis: new Date().toISOString(),
+        },
+      },
+    });
+
+    console.log(`[VirusTotal Analysis] Database updated successfully for ${appData.packageName}`);
+
+    return {
+      success: true,
+      analysis: vtResult,
+      app: { ...appData, status: vtResult.status },
+    };
+  } catch (error) {
+    console.error(`[VirusTotal Analysis] Error analyzing ${sha256}:`, error.message);
+    
+    try {
+      const dynamicIndex = getDynamicIndexName();
+      const searchRes = await esClient.search({
+        index: dynamicIndex,
+        size: 1,
+        query: { term: { sha256: { value: sha256 } } },
+      });
+
+      if (searchRes.hits.hits.length > 0) {
+        const docId = searchRes.hits.hits[0]._id;
+        await esClient.update({
+          index: dynamicIndex,
+          id: docId,
+          body: {
+            doc: {
+              virusTotalError: error.message,
+              lastVirusTotalAnalysis: new Date().toISOString(),
+            },
+          },
+        });
+      }
+    } catch (updateError) {
+      console.error(`[VirusTotal Analysis] Failed to update error status:`, updateError.message);
+    }
+    
+    throw error;
+  }
+}
+
 // Route: POST /upload (Mobile app upload, no auth required)
 router.post(
   "/upload",
   (req, res, next) => {
     console.log(">>> Files received:", req.files);
     console.log(">>> Body:", req.body);
-    // Handle file uploads with multer
     upload.fields([
       { name: "apk", maxCount: 1 },
       { name: "metadata", maxCount: 1 },
@@ -266,7 +358,7 @@ router.post(
       next();
     });
   },
-  uploadApp // Delegate to the uploadApp controller
+  uploadApp
 );
 
 // Routes for APK upload and management
@@ -278,6 +370,7 @@ router.post(
   ]),
   uploadApp
 );
+
 // Route: POST /analyze/:sha256 (Trigger MobSF analysis, no auth required)
 router.post("/analyze/:sha256", async (req, res) => {
   const esClient = req.app.get("esClient");
@@ -287,6 +380,19 @@ router.post("/analyze/:sha256", async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error("MobSF Analysis Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Route: POST /analyze-vt/:sha256 (Trigger VirusTotal analysis, no auth required)
+router.post("/analyze-vt/:sha256", async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const sha256 = req.params.sha256;
+  try {
+    const result = await analyzeAppWithVirusTotal(sha256, esClient);
+    res.json(result);
+  } catch (err) {
+    console.error("VirusTotal Analysis Error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -439,6 +545,51 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             background: linear-gradient(135deg, #005577, #007bb6);
             transform: translateY(-1px);
           }
+          .search-section {
+            background: linear-gradient(135deg, #1b263b, #415a77);
+            padding: 15px 25px;
+            border-radius: 10px;
+            margin: 15px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+          }
+          .search-section label {
+            color: #90e0ef;
+            font-weight: bold;
+          }
+          .search-section input[type="text"] {
+            background: #0d1b2a;
+            border: 2px solid #415a77;
+            border-radius: 6px;
+            padding: 8px 12px;
+            color: white;
+            font-size: 1rem;
+            width: 300px;
+          }
+          .search-section select {
+            background: #0d1b2a;
+            border: 2px solid #415a77;
+            border-radius: 6px;
+            padding: 8px 12px;
+            color: white;
+            font-size: 1rem;
+          }
+          .search-section button {
+            background: linear-gradient(135deg, #0077b6, #0096c7);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+          }
+          .search-section button:hover {
+            background: linear-gradient(135deg, #005577, #007bb6);
+            transform: translateY(-1px);
+          }
           .current-index {
             background: linear-gradient(135deg, #1b263b, #415a77);
             padding: 10px 20px;
@@ -487,6 +638,11 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             font-weight: bold;
             color: white;
           }
+          th:nth-child(1) { width: 20%; }
+          th:nth-child(2) { width: 20%; }
+          th:nth-child(3) { width: 20%; }
+          th:nth-child(4) { width: 20%; }
+          th:nth-child(5) { width: 20%; }
           td {
             padding: 15px;
             border-bottom: 1px solid #415a77;
@@ -528,6 +684,9 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             background-color: #f77f00;
             color: white;
           }
+          .actions {
+            min-width: 200px;
+          }
           button {
             padding: 8px 14px;
             border: none;
@@ -544,6 +703,13 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           }
           .btn-mobsf:hover {
             background: linear-gradient(135deg, #5a2a9f, #6f42c1);
+            transform: translateY(-1px);
+          }
+          .btn-vt {
+            background: linear-gradient(135deg, #00b4d8, #48cae4);
+          }
+          .btn-vt:hover {
+            background: linear-gradient(135deg, #0096c7, #00b4d8);
             transform: translateY(-1px);
           }
           .btn-report {
@@ -610,7 +776,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             font-size: 0.8rem;
             color: #ffb703;
           }
-          .mobsf-info {
+          .mobsf-info, .vt-info {
             font-size: 0.8rem;
             color: #90e0ef;
             margin-top: 5px;
@@ -657,13 +823,19 @@ router.get("/apps", requireWebAuth, async (req, res) => {
         
         <div class="header">
           <h1>📱 Uploaded Apps</h1>
-          <div class="subtitle">Android Malware Detection System with MobSF Integration</div>
+          <div class="subtitle">Android Malware Detection System with MobSF & VirusTotal Integration</div>
           
           <div class="date-selector">
             <label for="date-picker">Select Date:</label>
             <input type="date" id="date-picker" value="${selectedDate}" />
             <button onclick="loadAppsForDate()">Load Apps</button>
             ${!isToday ? `<button onclick="loadToday()">Today</button>` : ""}
+          </div>
+          
+          <div class="search-section">
+            <label for="search-input">Search Apps:</label>
+            <input type="text" id="search-input" placeholder="e.g., rg cipher vpn" onkeyup="performSearch()">
+            <button onclick="performSearch()">Search</button>
           </div>
           
           <div class="current-index">Using Index: ${indexName}</div>
@@ -709,7 +881,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
               <th>Package Info</th>
               <th>File Information</th>
               <th>Status & Analysis</th>
-              <th>Actions</th>
+              <th class="actions">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -720,6 +892,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
         const uploadDate = new Date(app.timestamp).toLocaleDateString();
         const permissionCount = app.permissions ? app.permissions.length : 0;
         const hasMobsfAnalysis = app.mobsfAnalysis && app.mobsfAnalysis.security_score !== undefined;
+        const hasVirusTotalAnalysis = app.virusTotalAnalysis && app.virusTotalAnalysis.detectionRatio;
         const hasApkFile = app.apkFilePath && app.apkFileName;
 
         let scoreClass = "score-medium";
@@ -735,6 +908,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
               <div class="file-info">Uploaded: ${uploadDate}</div>
               ${app.source ? `<div class="file-info">Source: ${app.source}</div>` : ""}
               ${app.lastMobsfAnalysis ? `<div class="file-info">MobSF: ${new Date(app.lastMobsfAnalysis).toLocaleDateString()}</div>` : ""}
+              ${app.lastVirusTotalAnalysis ? `<div class="file-info">VirusTotal: ${new Date(app.lastVirusTotalAnalysis).toLocaleDateString()}</div>` : ""}
             </td>
             <td>
               <div class="package-name">${app.packageName}</div>
@@ -753,36 +927,49 @@ router.get("/apps", requireWebAuth, async (req, res) => {
               </span>
               ${hasMobsfAnalysis ? `
                 <div class="mobsf-info">
-                  <span class="security-score ${scoreClass}">Score: ${app.mobsfAnalysis.security_score}/100</span>
+                  <span class="security-score ${scoreClass}">MobSF Score: ${app.mobsfAnalysis.security_score}/100</span>
                 </div>
                 <div class="mobsf-info">
                   Risk: ${app.mobsfAnalysis.malware_probability || "unknown"}
                   ${app.mobsfAnalysis.high_risk_findings > 0 ? `| 🔴 ${app.mobsfAnalysis.high_risk_findings} high risks` : ""}
                 </div>
               ` : ""}
+              ${hasVirusTotalAnalysis ? `
+                <div class="vt-info">
+                  <span class="security-score ${app.virusTotalAnalysis.status === 'safe' ? 'score-high' : app.virusTotalAnalysis.status === 'malicious' ? 'score-low' : 'score-medium'}">
+                    VT Detection: ${app.virusTotalAnalysis.detectionRatio}
+                  </span>
+                </div>
+                <div class="vt-info">
+                  Malicious: ${app.virusTotalAnalysis.maliciousCount} | Suspicious: ${app.virusTotalAnalysis.suspiciousCount}
+                </div>
+              ` : ""}
             </td>
-            <td>
-              ${hasApkFile ? `
-                <button onclick="runMobsfAnalysis('${app.sha256}', '${app.packageName}')" class="btn-mobsf" title="Run MobSF Static Analysis">
+            <td class="actions">
+              <div class="btn-group">
+                <button class="btn-mobsf" onclick="runMobsfAnalysis('${app.sha256}', '${app.packageName}')" title="Run MobSF Static Analysis">
                   ${hasMobsfAnalysis ? "Re-analyze" : "Analyze"} MobSF
                 </button>
-              ` : ""}
-              ${hasMobsfAnalysis ? `
-                <button onclick="downloadMobsfReport('${app.sha256}')" class="btn-report" title="Download MobSF PDF Report">
-                  PDF Report
+                ${hasMobsfAnalysis ? `
+                  <button class="btn-report" onclick="downloadMobsfReport('${app.sha256}')" title="Download MobSF PDF Report">
+                    PDF Report
+                  </button>
+                ` : ""}
+                <button class="btn-sandbox" onclick="uploadToSandbox('${app.sha256}', '${app.packageName}')">
+                  Upload to Sandbox
                 </button>
-              ` : ""}
-              <button onclick="uploadToSandbox('${app.sha256}', '${app.packageName}')" class="btn-sandbox">
-                Upload to Sandbox
-              </button>
-              ${app.apkFileName ? `
-                <button onclick="downloadFile('${app.apkFileName}')" class="btn-download">
-                  Download APK
+                <button class="btn-vt" onclick="runVirusTotalAnalysis('${app.sha256}', '${app.packageName}')" title="Run VirusTotal Analysis">
+                  ${hasVirusTotalAnalysis ? "Re-analyze" : "Analyze"} VirusTotal
                 </button>
-              ` : ""}
-              <button onclick="deleteApp('${app.sha256}', '${app.packageName}')" class="btn-delete">
-                Delete
-              </button>
+                ${app.apkFileName ? `
+                  <button class="btn-download" onclick="downloadFile('${app.apkFileName}')">
+                    Download APK
+                  </button>
+                ` : ""}
+                <button class="btn-delete" onclick="deleteApp('${app.sha256}', '${app.packageName}')">
+                  Delete
+                </button>
+              </div>
             </td>
           </tr>
         `;
@@ -833,6 +1020,21 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             window.location.href = getBasePath() + '/download/' + encodeURIComponent(fileName);
           }
           
+          function performSearch() {
+            const query = document.getElementById('search-input').value.toLowerCase();
+            const rows = document.querySelectorAll('table tbody tr');
+            rows.forEach(row => {
+              const appName = row.querySelector('.app-name').textContent.toLowerCase();
+              const packageName = row.querySelector('.package-name').textContent.toLowerCase();
+              const fileName = row.querySelector('td:nth-child(3) .file-info').textContent.toLowerCase();
+              if (appName.includes(query) || packageName.includes(query) || fileName.includes(query)) {
+                row.style.display = '';
+              } else {
+                row.style.display = 'none';
+              }
+            });
+          }
+          
           function runMobsfAnalysis(sha256, packageName) {
             if (confirm('Run MobSF static analysis for "' + packageName + '"? This may take several minutes.')) {
               event.target.textContent = 'Analyzing...';
@@ -862,6 +1064,35 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             }
           }
           
+          function runVirusTotalAnalysis(sha256, packageName) {
+            if (confirm('Run VirusTotal analysis for "' + packageName + '"? This may take a few minutes.')) {
+              event.target.textContent = 'Analyzing...';
+              event.target.disabled = true;
+              event.target.className = 'btn-vt btn-disabled';
+              
+              fetch(getBasePath() + '/analyze-vt/' + sha256, { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                  if (data.error) {
+                    alert('VirusTotal Analysis Error: ' + data.error);
+                  } else {
+                    alert('VirusTotal analysis completed successfully!\\nDetection Ratio: ' + 
+                          (data.analysis ? data.analysis.detectionRatio : 'N/A') + 
+                          '\\nStatus: ' + data.app.status);
+                    location.reload();
+                  }
+                })
+                .catch(error => {
+                  alert('Error: ' + error.message);
+                })
+                .finally(() => {
+                  event.target.textContent = 'Analyze VirusTotal';
+                  event.target.disabled = false;
+                  event.target.className = 'btn-vt';
+                });
+            }
+          }
+          
           function downloadMobsfReport(sha256) {
             const selectedDate = document.getElementById('date-picker').value;
             const url = getBasePath() + '/report/' + sha256 + (selectedDate ? '?date=' + selectedDate : '');
@@ -886,7 +1117,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           }
           
           function deleteApp(sha256, packageName) {
-            if (confirm('Are you sure you want to delete "' + packageName + '"? This will also delete the APK file and MobSF analysis.')) {
+            if (confirm('Are you sure you want to delete "' + packageName + '"? This will also delete the APK file and analysis results.')) {
               fetch(getBasePath() + '/delete/' + sha256, { method: 'DELETE' })
                 .then(response => response.json())
                 .then(data => {
@@ -943,7 +1174,7 @@ router.post("/apps/:sha256/upload-sandbox", requireWebAuth, async (req, res) => 
     const appData = searchRes.hits.hits[0]._source;
 
     console.log(`📤 Uploading to sandbox: ${appData.apkFilePath}`);
-// Update app status in Elasticsearch
+
     await esClient.update({
       index: dynamicIndex,
       id: docId,
@@ -963,12 +1194,12 @@ router.post("/apps/:sha256/upload-sandbox", requireWebAuth, async (req, res) => 
     res.status(500).send("Failed to submit to sandbox");
   }
 });
+
 // Route: GET /list (Get apps as JSON, no auth required)
 router.get("/list", async (req, res) => {
   const esClient = req.app.get("esClient");
   try {
     const dynamicIndex = getDynamicIndexName();
-    // Search for user-uploaded apps
     const result = await esClient.search({
       index: dynamicIndex,
       size: 100,
@@ -1002,4 +1233,5 @@ router.delete("/delete/:sha256", requireWebAuth, deleteApp);
 
 // POST /scan - Original scan endpoint (backward compatibility) - NO AUTH REQUIRED
 router.post("/scan", receiveAppData);
-module.exports = router; // Export router
+
+module.exports = router;

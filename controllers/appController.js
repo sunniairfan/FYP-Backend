@@ -1,15 +1,15 @@
-// appController.js
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto"); // For calculating file hashes
-const { checkVirusTotal } = require("../utils/virusTotal"); // VirusTotal utility for malware checks
-const mobsf = require("../utils/mobsf"); // MobSF utility for app analysis
-// Path to signature database (list of known malicious hashes)
+const crypto = require("crypto");
+const { analyzeFileWithVirusTotal } = require("../utils/virusTotal");
+const mobsf = require("../utils/mobsf");
+
+// Path to signature database
 const signaturePath = path.join(__dirname, "../signatureDB.json");
-// Load known malicious hashes if file exists, else empty array
 const knownHashes = fs.existsSync(signaturePath)
   ? JSON.parse(fs.readFileSync(signaturePath, "utf-8"))
   : [];
+
 // Directory for storing uploaded APK files
 const uploadsDir = path.join(__dirname, "../Uploads/apks");
 
@@ -39,6 +39,7 @@ const calculateFileHash = (filePath) => {
     stream.on("error", (err) => reject(err));
   });
 };
+
 // Filter dangerous Android permissions from a list
 const separateDangerousPermissions = (permissions) => {
   const dangerousPerms = permissions.filter((perm) => {
@@ -70,7 +71,7 @@ const separateDangerousPermissions = (permissions) => {
     ];
     return dangerousPermissions.includes(perm);
   });
-// Convert to object with numbered keys (e.g., dangerousPermission1)
+
   const result = {};
   dangerousPerms.forEach((perm, index) => {
     result[`dangerousPermission${index + 1}`] = perm;
@@ -78,75 +79,7 @@ const separateDangerousPermissions = (permissions) => {
   
   return result;
 };
-// Analyze app with MobSF and update Elasticsearch
-async function analyzeApp(sha256, esClient) {
-  // Ensure Elasticsearch index exists
-  const ensureIndexExists = esClient.ensureIndexExists || (async () => {});
-  await ensureIndexExists(esClient);
-  // Search for app by SHA256 hash
-  const searchRes = await esClient.search({
-    index: getIndexName(),
-    size: 1,
-    query: { term: { sha256: { value: sha256 } } },
-  });
-  
-  if (searchRes.hits.hits.length === 0) {
-    throw new Error("App not found");
-  }
-  const docId = searchRes.hits.hits[0]._id;
-  const appData = searchRes.hits.hits[0]._source;
-  const filePath = appData.apkFilePath;
-// Verify APK file exists
-  if (!filePath || !fs.existsSync(filePath)) {
-    throw new Error("APK file not found");
-  }
-// Upload to MobSF and get hash
-  const uploadRes = await mobsf.uploadToMobSF(filePath);
-  const md5Hash = uploadRes.hash;
-// Run MobSF scan
-  await mobsf.scanWithMobSF(md5Hash);
-// Get JSON report
-  const report = await mobsf.getJsonReport(md5Hash);
-// Extract dangerous permissions from report
-  const dangerousPermissions = Object.entries(report.permissions || {})
-    .filter(([_, perm]) => perm.status === "dangerous")
-    .map(([perm]) => perm);
-// Count high-risk findings
-  const highRiskFindings = Object.entries(report.code_analysis || {})
-    .filter(([_, finding]) => finding.metadata.severity === "high")
-    .length;
-// Get malware probability from VirusTotal data
-  const malwareProbability = report.virus_total 
-    ? `${report.virus_total.malicious}/${report.virus_total.total}`
-    : "unknown";
-// Compile MobSF analysis results
-  const mobsfAnalysis = {
-    security_score: report.security_score || 0,
-    dangerous_permissions: dangerousPermissions,
-    high_risk_findings: highRiskFindings,
-    malware_probability: malwareProbability,
-  };
-// Determine app status based on security score
-  let status = "unknown";
-  if (report.security_score >= 70) status = "safe";
-  else if (report.security_score < 40) status = "malicious";
-  else status = "suspicious";
-// Update Elasticsearch with analysis results
-  await esClient.update({
-    index: getIndexName(),
-    id: docId,
-    body: {
-      doc: {
-        mobsfAnalysis,
-        lastMobsfAnalysis: new Date().toISOString(),
-        mobsfHash: md5Hash,
-        status,
-      },
-    },
-  });
 
-  return { success: true, analysis: mobsfAnalysis, app: appData };
-}
 // Controller to handle APK uploads
 const uploadApp = async (req, res) => {
   console.log(">>> Received APK upload request:", new Date().toISOString());
@@ -155,15 +88,12 @@ const uploadApp = async (req, res) => {
   console.log("Uploaded files:", req.files);
   
   try {
-    // Check if file was uploaded
     if (!req.files || !req.files.apk || !req.files.apk[0]) {
       console.error("No APK file uploaded");
       return res.status(400).json({ error: "No APK file uploaded" });
     }
 
-    const apkFile = req.files.apk[0]; // Access the uploaded APK file
-
-    // Parse metadata from form data
+    const apkFile = req.files.apk[0];
     const metadata = JSON.parse(req.body.metadata || "{}");
     const apps = metadata.apps || [];
     
@@ -173,13 +103,10 @@ const uploadApp = async (req, res) => {
       return res.status(400).json({ error: "No app metadata provided" });
     }
 
-    const app = apps[0]; // Get first app from metadata
+    const app = apps[0];
     const esClient = req.app.get("esClient");
-
-    // Access ensureIndexExists from req.app
     const ensureIndexExists = req.app.get("ensureIndexExists") || (async () => {});
 
-    // Verify file integrity by calculating hash
     const uploadedFileHash = await calculateFileHash(apkFile.path);
     const expectedHash = app.sha256;
 
@@ -196,7 +123,6 @@ const uploadApp = async (req, res) => {
       });
     }
 
-    // Rename file to include package name for better organization
     const newFileName = `${app.packageName}_${Date.now()}.apk`;
     const newFilePath = path.join(uploadsDir, newFileName);
     fs.renameSync(apkFile.path, newFilePath);
@@ -204,12 +130,8 @@ const uploadApp = async (req, res) => {
 
     let status = "unknown";
     let source = "Unknown";
-    let scanTime = null;
-    let detectionRatio = null;
-    let totalEngines = null;
-    let detectedEngines = null;
+    let virusTotalAnalysis = null;
 
-    // Check if app already exists in Elasticsearch
     await ensureIndexExists(esClient);
     const existing = await esClient.search({
       index: getIndexName(),
@@ -241,31 +163,39 @@ const uploadApp = async (req, res) => {
 
       console.log(`✅ Updated existing app → ${app.packageName}: ${status}`);
     } else {
-      // Check if hash is malicious
       if (isHashMalicious(uploadedFileHash)) {
         status = "malicious";
         source = "SignatureDB";
         console.log(`Detected malicious app via SignatureDB: ${app.packageName}`);
       } else {
-        console.log(`Checking VirusTotal for ${app.packageName}`);
-        const vtResult = await checkVirusTotal(uploadedFileHash);
-        // Check with VirusTotal
-        if (vtResult && typeof vtResult === "object") {
+        console.log(`Analyzing with VirusTotal for ${app.packageName}`);
+        try {
+          const vtResult = await analyzeFileWithVirusTotal(newFilePath);
           status = vtResult.status || "unknown";
-          scanTime = vtResult.scanTime || new Date().toISOString();
-          detectionRatio = vtResult.detectionRatio || "0/0";
-          totalEngines = vtResult.totalEngines || 0;
-          detectedEngines = vtResult.detectedEngines || 0;
-        } else {
-          status = vtResult || "unknown";
+          source = "VirusTotal";
+          virusTotalAnalysis = {
+            status: vtResult.status,
+            detectionRatio: vtResult.detectionRatio,
+            totalEngines: vtResult.totalEngines,
+            detectedEngines: vtResult.detectedEngines,
+            maliciousCount: vtResult.maliciousCount,
+            suspiciousCount: vtResult.suspiciousCount,
+            scanTime: vtResult.scanTime,
+            analysisId: vtResult.analysisId,
+          };
+          console.log(`VirusTotal result for ${app.packageName}: ${status}`);
+        } catch (vtError) {
+          console.error(`VirusTotal analysis failed for ${app.packageName}:`, vtError.message);
+          virusTotalAnalysis = {
+            status: "error",
+            error: vtError.message,
+            scanTime: new Date().toISOString(),
+          };
         }
-        
-        source = "VirusTotal";
-        console.log(`VirusTotal result for ${app.packageName}: ${status}`);
       }
 
       const dangerousPermissions = separateDangerousPermissions(app.permissions || []);
-// Create new Elasticsearch document
+
       const docData = {
         appName: app.appName,
         packageName: app.packageName,
@@ -279,12 +209,9 @@ const uploadApp = async (req, res) => {
         apkFilePath: newFilePath,
         apkFileName: newFileName,
         uploadSource: "android_app",
+        virusTotalAnalysis,
+        lastVirusTotalAnalysis: new Date().toISOString(),
       };
-
-      if (scanTime) docData.scanTime = scanTime;
-      if (detectionRatio) docData.detectionRatio = detectionRatio;
-      if (totalEngines) docData.totalEngines = totalEngines;
-      if (detectedEngines !== null) docData.detectedEngines = detectedEngines;
 
       const indexResponse = await esClient.index({
         index: getIndexName(),
@@ -298,13 +225,109 @@ const uploadApp = async (req, res) => {
     // Trigger MobSF analysis in the background
     setTimeout(async () => {
       try {
-        await analyzeApp(uploadedFileHash, esClient);
+        const dynamicIndex = getIndexName();
+        const searchRes = await esClient.search({
+          index: dynamicIndex,
+          size: 1,
+          query: { term: { sha256: { value: uploadedFileHash } } },
+        });
+
+        if (searchRes.hits.hits.length === 0) {
+          console.error(`App not found for background MobSF analysis: ${app.packageName}`);
+          return;
+        }
+
+        const docId = searchRes.hits.hits[0]._id;
+        const appData = searchRes.hits.hits[0]._source;
+        const filePath = appData.apkFilePath;
+
+        if (!filePath || !fs.existsSync(filePath)) {
+          console.error(`APK file not found for MobSF analysis: ${filePath || 'undefined'}`);
+          await esClient.update({
+            index: dynamicIndex,
+            id: docId,
+            body: {
+              doc: {
+                status: "analysis_failed",
+                mobsfError: `APK file not found: ${filePath || 'undefined'}`,
+                lastMobsfAnalysis: new Date().toISOString(),
+              },
+            },
+          });
+          return;
+        }
+
+        const uploadRes = await mobsf.uploadToMobSF(filePath);
+        const md5Hash = uploadRes.hash;
+        await mobsf.scanWithMobSF(md5Hash);
+        const report = await mobsf.getJsonReport(md5Hash);
+
+        const dangerousPermissions = Object.entries(report.permissions || {})
+          .filter(([_, perm]) => perm.status === "dangerous")
+          .map(([perm]) => perm);
+
+        const highRiskFindings = Object.entries(report.code_analysis || {})
+          .filter(([_, finding]) => finding.metadata.severity === "high")
+          .length;
+
+        const mobsfAnalysis = {
+          security_score: report.security_score || 0,
+          dangerous_permissions: dangerousPermissions,
+          high_risk_findings: highRiskFindings,
+          scan_type: uploadRes.scan_type || "unknown",
+          file_name: uploadRes.file_name || path.basename(filePath),
+        };
+
+        let mobsfStatus = "unknown";
+        if (report.security_score >= 70) mobsfStatus = "safe";
+        else if (report.security_score < 40) mobsfStatus = "malicious";
+        else mobsfStatus = "suspicious";
+
+        await esClient.update({
+          index: dynamicIndex,
+          id: docId,
+          body: {
+            doc: {
+              mobsfAnalysis,
+              lastMobsfAnalysis: new Date().toISOString(),
+              mobsfHash: md5Hash,
+              mobsfScanType: uploadRes.scan_type,
+              status: mobsfStatus,
+            },
+          },
+        });
+
         console.log(`Background MobSF analysis completed for ${app.packageName} (${uploadedFileHash})`);
       } catch (error) {
-        console.error(`Background MobSF analysis failed for ${app.packageName}:`, error);
+        console.error(`Background MobSF analysis failed for ${app.packageName}:`, error.message);
+        try {
+          const dynamicIndex = getIndexName();
+          const searchRes = await esClient.search({
+            index: dynamicIndex,
+            size: 1,
+            query: { term: { sha256: { value: uploadedFileHash } } },
+          });
+
+          if (searchRes.hits.hits.length > 0) {
+            const docId = searchRes.hits.hits[0]._id;
+            await esClient.update({
+              index: dynamicIndex,
+              id: docId,
+              body: {
+                doc: {
+                  status: "analysis_failed",
+                  mobsfError: error.message,
+                  lastMobsfAnalysis: new Date().toISOString(),
+                },
+              },
+            });
+          }
+        } catch (updateError) {
+          console.error(`Failed to update MobSF error status:`, updateError.message);
+        }
       }
     }, 0);
-// Send response to client
+
     res.status(200).json({
       message: "APK uploaded and queued for MobSF analysis",
       app: {
@@ -315,6 +338,7 @@ const uploadApp = async (req, res) => {
         source: source,
         fileName: newFileName,
         sha256: uploadedFileHash,
+        virusTotalAnalysis,
       },
     });
   } catch (err) {
@@ -329,6 +353,7 @@ const uploadApp = async (req, res) => {
     });
   }
 };
+
 // Controller to handle app scan requests
 const receiveAppData = async (req, res) => {
   console.log(">>> Received scan request:", new Date().toISOString());
@@ -356,10 +381,7 @@ const receiveAppData = async (req, res) => {
 
     let status = "unknown";
     let source = "Unknown";
-    let scanTime = null;
-    let detectionRatio = null;
-    let totalEngines = null;
-    let detectedEngines = null;
+    let virusTotalAnalysis = null;
 
     try {
       const ensureIndexExists = req.app.get("ensureIndexExists") || (async () => {});
@@ -374,7 +396,7 @@ const receiveAppData = async (req, res) => {
         const doc = existing.hits.hits[0];
         status = doc._source.status || "unknown";
         source = doc._source.source || "Elasticsearch";
-// Update timestamp and uploadedByUser flag
+
         await esClient.update({
           index: getIndexName(),
           id: doc._id,
@@ -396,21 +418,7 @@ const receiveAppData = async (req, res) => {
           source = "SignatureDB";
           console.log(`Detected malicious app via SignatureDB: ${packageName}`);
         } else {
-          console.log(`Checking VirusTotal for ${packageName}`);
-          const vtResult = await checkVirusTotal(sha256);
-          
-          if (vtResult && typeof vtResult === "object") {
-            status = vtResult.status || "unknown";
-            scanTime = vtResult.scanTime || new Date().toISOString();
-            detectionRatio = vtResult.detectionRatio || "0/0";
-            totalEngines = vtResult.totalEngines || 0;
-            detectedEngines = vtResult.detectedEngines || 0;
-          } else {
-            status = vtResult || "unknown";
-          }
-          
-          source = "VirusTotal";
-          console.log(`VirusTotal result for ${packageName}: ${status}`);
+          console.log(`VirusTotal check skipped for scan endpoint: ${packageName}`);
         }
 
         const dangerousPermissions = separateDangerousPermissions(permissions || []);
@@ -427,11 +435,6 @@ const receiveAppData = async (req, res) => {
           uploadedByUser: uploadedByUserFlag,
         };
 
-        if (scanTime) docData.scanTime = scanTime;
-        if (detectionRatio) docData.detectionRatio = detectionRatio;
-        if (totalEngines) docData.totalEngines = totalEngines;
-        if (detectedEngines !== null) docData.detectedEngines = detectedEngines;
-
         await esClient.index({
           index: getIndexName(),
           document: docData,
@@ -439,7 +442,7 @@ const receiveAppData = async (req, res) => {
         console.log(`📤 Indexed (Scan) → ${packageName} (${status})`);
       }
 
-      results.push({ packageName, status, source });
+      results.push({ packageName, status, source, virusTotalAnalysis });
     } catch (err) {
       console.error(`❌ Error processing ${packageName}:`, err.message);
       results.push({ packageName, status: "error", error: err.message });
@@ -458,7 +461,7 @@ const getAppDetails = async (req, res) => {
     const ensureIndexExists = req.app.get("ensureIndexExists") || (async () => {});
     await ensureIndexExists(esClient);
     let searchQuery;
-    // Check if identifier is a SHA256 hash or document ID
+
     if (/^[a-fA-F0-9]{64}$/.test(identifier)) {
       searchQuery = { term: { sha256: { value: identifier } } };
     } else {
@@ -497,16 +500,16 @@ const getAppDetails = async (req, res) => {
     res.status(500).json({ error: "Failed to fetch app details" });
   }
 };
-// Controller to download an APK file
+
 const downloadApp = (req, res) => {
   const fileName = req.params.fileName;
   const filePath = path.join(uploadsDir, fileName);
-// Check if file exists
+
   if (!fs.existsSync(filePath)) {
     console.error(`File not found: ${filePath}`);
     return res.status(404).json({ error: "File not found" });
   }
-// Send file for download
+
   res.download(filePath, fileName, (err) => {
     if (err) {
       console.error("Error downloading file:", err.message);
@@ -522,7 +525,7 @@ const deleteApp = async (req, res) => {
   try {
     const ensureIndexExists = req.app.get("ensureIndexExists") || (async () => {});
     await ensureIndexExists(esClient);
-    // Controller to delete an app and its data
+
     const searchRes = await esClient.search({
       index: getIndexName(),
       size: 1,
@@ -536,7 +539,7 @@ const deleteApp = async (req, res) => {
 
     const doc = searchRes.hits.hits[0];
     const appData = doc._source;
-// Delete MobSF scan if it exists
+
     if (appData.mobsfHash) {
       try {
         await mobsf.deleteScan(appData.mobsfHash);
@@ -545,12 +548,12 @@ const deleteApp = async (req, res) => {
         console.error(`Failed to delete MobSF scan for ${appData.packageName}:`, mobsfErr.message);
       }
     }
-// Delete APK file if it exists
+
     if (appData.apkFilePath && fs.existsSync(appData.apkFilePath)) {
       fs.unlinkSync(appData.apkFilePath);
       console.log(`🗑️ Deleted APK file: ${appData.apkFileName}`);
     }
-// Delete from Elasticsearch
+
     await esClient.delete({
       index: getIndexName(),
       id: doc._id,
@@ -567,7 +570,7 @@ const deleteApp = async (req, res) => {
     res.status(500).json({ error: "Failed to delete app" });
   }
 };
-// Export controller functions
+
 module.exports = {
   receiveAppData,
   uploadApp,
