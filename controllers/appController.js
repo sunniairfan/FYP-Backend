@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { analyzeFileWithVirusTotal } = require("../utils/virusTotal");
+const { checkVirusTotal, analyzeFileWithVirusTotal } = require("../utils/virusTotal");
 const mobsf = require("../utils/mobsf");
 
 // Path to signature database
@@ -396,6 +396,7 @@ const receiveAppData = async (req, res) => {
         const doc = existing.hits.hits[0];
         status = doc._source.status || "unknown";
         source = doc._source.source || "Elasticsearch";
+        virusTotalAnalysis = doc._source.virusTotalAnalysis || null;
 
         await esClient.update({
           index: getIndexName(),
@@ -418,7 +419,25 @@ const receiveAppData = async (req, res) => {
           source = "SignatureDB";
           console.log(`Detected malicious app via SignatureDB: ${packageName}`);
         } else {
-          console.log(`VirusTotal check skipped for scan endpoint: ${packageName}`);
+          // Check with VirusTotal for hash lookup
+          console.log(`🦠 Checking VirusTotal for: ${packageName}`);
+          const vtResult = await checkVirusTotal(sha256);
+          
+          if (vtResult && vtResult.status !== "unknown") {
+            status = vtResult.status;
+            source = "VirusTotal";
+            virusTotalAnalysis = {
+              detectionRatio: vtResult.detectionRatio,
+              totalEngines: vtResult.totalEngines,
+              detectedEngines: vtResult.detectedEngines,
+              scanTime: vtResult.scanTime
+            };
+            console.log(`✅ VirusTotal result for ${packageName}: ${status} (${vtResult.detectionRatio})`);
+          } else {
+            console.log(`ℹ️  VirusTotal: Hash not found for ${packageName}`);
+            status = "unknown";
+            source = "Unknown";
+          }
         }
 
         const dangerousPermissions = separateDangerousPermissions(permissions || []);
@@ -433,6 +452,7 @@ const receiveAppData = async (req, res) => {
           source,
           timestamp: new Date(),
           uploadedByUser: uploadedByUserFlag,
+          virusTotalAnalysis,
         };
 
         await esClient.index({

@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { esClient } = require('../elasticsearch');
 
 // Helper function to get dynamic index name
 const getIndexName = () => {
@@ -34,10 +35,24 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
       sort: [{ timestamp: { order: "desc" } }],
     });
 
-    const apps = result.hits.hits.map((hit) => ({
-      ...hit._source,
-      id: hit._id
-    }));
+    const apps = result.hits.hits.map((hit) => {
+      const app = hit._source;
+      
+      // Extract VirusTotal analysis data
+      const virusTotalData = app.virusTotalAnalysis || {};
+      
+      return {
+        ...app,
+        id: hit._id,
+        // Map VirusTotal data to flat properties for easy access
+        detectionRatio: virusTotalData.detectionRatio || 'N/A',
+        totalEngines: virusTotalData.totalEngines || 'N/A',
+        detectedEngines: virusTotalData.detectedEngines || 'N/A',
+        scanTime: virusTotalData.scanTime || app.scanTime || null,
+        // Ensure status is never "NOT FOUND" or "not_found" - convert to "unknown"
+        status: (app.status === 'NOT FOUND' || app.status === 'not_found') ? 'unknown' : (app.status || 'unknown')
+      };
+    });
 
     // Calculate statistics
     const stats = {
@@ -250,6 +265,31 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
             background: linear-gradient(45deg, #ef4444, #f56565);
         }
 
+        .delete-index-btn {
+            background: linear-gradient(45deg, #dc2626, #ef4444);
+            border: none;
+            border-radius: 8px;
+            padding: 10px 20px;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+            margin-left: 15px;
+            transition: all 0.3s ease;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .delete-index-btn:hover {
+            background: linear-gradient(45deg, #b91c1c, #dc2626);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(220, 38, 38, 0.4);
+        }
+
+        .delete-index-btn:active {
+            transform: translateY(0);
+        }
+
         .modal {
             position: fixed;
             top: 0;
@@ -347,7 +387,9 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
 
         <div class="date-selector">
             <label for="dateSelect">Select Date Index:</label>
-            <input type="date" id="dateSelect" value="${currentDate}" onchange="changeDate(this.value)">
+                            <input type="date" id="selectedDate" onchange="fetchData()">
+                <button class="delete-index-btn" onclick="deleteIndexData()">🗑️ Clear All Data</button>
+            </div>
         </div>
 
         <div class="stats-grid">
@@ -404,8 +446,8 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
                         SHA256: ${app.sha256 ? app.sha256.substring(0, 8) + '...' + app.sha256.substring(app.sha256.length - 8) : 'N/A'}
                     </td>
                     <td>
-                        <span class="status-badge status-${app.status || 'unknown'}">${app.status || 'Unknown'}</span><br>
-                        Detection: ${app.detectionRatio || 'N/A'}<br>
+                        <span class="status-badge status-${app.status || 'unknown'}">${(app.status === 'unknown' || app.status === 'not_found') ? 'Unknown' : (app.status || 'Unknown')}</span><br>
+                        Detection: ${app.detectionRatio}<br>
                         Scanned: ${app.scanTime ? new Date(app.scanTime).toLocaleString() : 'N/A'}
                     </td>
                     <td>
@@ -431,9 +473,17 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
 
     <script>
         const appsData = ${JSON.stringify(apps)};
+        const currentIndexName = '${indexName}';
 
         function changeDate(date) {
             location.href = '/dashboard?date=' + date;
+        }
+
+        function fetchData() {
+            const selectedDate = document.getElementById('selectedDate').value;
+            if (selectedDate) {
+                location.href = '/dashboard?date=' + selectedDate;
+            }
         }
 
         function viewDetails(id) {
@@ -450,10 +500,10 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
                     '<p><strong>SHA256:</strong> ' + (app.sha256 || 'N/A') + '</p>' +
                     '<p><strong>Size:</strong> ' + (app.sizeMB ? app.sizeMB.toFixed(2) + ' MB' : 'N/A') + '</p>' +
                     '<p><strong>Source:</strong> ' + (app.source || 'N/A') + '</p>' +
-                    '<p><strong>Status:</strong> <span class="status-badge status-' + (app.status || 'unknown') + '">' + (app.status || 'Unknown') + '</span></p>' +
-                    '<p><strong>Detection Ratio:</strong> ' + (app.detectionRatio || 'N/A') + '</p>' +
-                    '<p><strong>Total Engines:</strong> ' + (app.totalEngines || 'N/A') + '</p>' +
-                    '<p><strong>Detected Engines:</strong> ' + (app.detectedEngines || 'N/A') + '</p>' +
+                    '<p><strong>Status:</strong> <span class="status-badge status-' + (app.status || 'unknown') + '">' + ((app.status === 'unknown' || app.status === 'not_found') ? 'Unknown' : (app.status || 'Unknown')) + '</span></p>' +
+                    '<p><strong>Detection Ratio:</strong> ' + (app.detectionRatio) + '</p>' +
+                    '<p><strong>Total Engines:</strong> ' + (app.totalEngines) + '</p>' +
+                    '<p><strong>Detected Engines:</strong> ' + (app.detectedEngines) + '</p>' +
                     '<p><strong>Scan Time:</strong> ' + (app.scanTime ? new Date(app.scanTime).toLocaleString() : 'N/A') + '</p>' +
                     '<p><strong>Timestamp:</strong> ' + (app.timestamp ? new Date(app.timestamp).toLocaleString() : 'N/A') + '</p>' +
                     '<p><strong>Uploaded by User:</strong> ' + (app.uploadedByUser ? 'Yes' : 'No') + '</p>' +
@@ -468,6 +518,37 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
 
         function closeModal() {
             document.getElementById('detailsModal').style.display = 'none';
+        }
+
+        async function deleteIndexData() {
+            if (!confirm('⚠️ WARNING: This will permanently delete ALL data in the current index.\\n\\nThis action cannot be undone. Continue?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/dashboard/delete-index', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        indexName: currentIndexName
+                    })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    alert('✅ Index data deleted successfully!');
+                    // Reload the page to show empty dashboard
+                    location.reload();
+                } else {
+                    alert('❌ Error deleting index: ' + result.error);
+                }
+            } catch (error) {
+                console.error('Error deleting index:', error);
+                alert('❌ Network error occurred while deleting index');
+            }
         }
     </script>
 </body>
@@ -489,6 +570,53 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
       </body>
       </html>
     `);
+  }
+});
+
+// Route to delete all data from a specific index
+router.post('/delete-index', async (req, res) => {
+  try {
+    const { indexName } = req.body;
+    
+    if (!indexName) {
+      return res.status(400).json({ error: 'Index name is required' });
+    }
+
+    console.log(`Attempting to delete all documents from index: ${indexName}`);
+
+    // Delete all documents in the index
+    const deleteResponse = await esClient.deleteByQuery({
+      index: indexName,
+      body: {
+        query: {
+          match_all: {}
+        }
+      }
+    });
+
+    console.log('Delete response:', deleteResponse);
+
+    res.json({ 
+      success: true, 
+      deletedCount: deleteResponse.deleted,
+      message: `Successfully deleted ${deleteResponse.deleted} documents from index ${indexName}`
+    });
+
+  } catch (err) {
+    console.error('Error deleting index data:', err);
+    
+    // Handle case where index doesn't exist
+    if (err.meta && err.meta.statusCode === 404) {
+      return res.json({ 
+        success: true, 
+        deletedCount: 0,
+        message: 'Index does not exist or is already empty'
+      });
+    }
+
+    res.status(500).json({ 
+      error: 'Failed to delete index data: ' + err.message 
+    });
   }
 });
 

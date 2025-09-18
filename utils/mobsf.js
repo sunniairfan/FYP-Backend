@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 // MobSF server URL and API key from environment variables or defaults
 const MOBSF_URL = process.env.MOBSF_URL || 'http://localhost:8000';
-const API_KEY = process.env.MOBSF_API_KEY || '38eb0df9817fbdd9d7e999e4da1e16d396d61bebb115eded7d63fc63ecf7b366';
+const API_KEY = process.env.MOBSF_API_KEY || '1c39fc61abee93f7cde2b75b0c6b70b2e7f42e414adfa80256b40a5ff333ef5d';
 // Enhanced logging for debugging
 function log(message, data = null) {
   console.log(`[MobSF] ${message}`, data ? JSON.stringify(data, null, 2) : '');
