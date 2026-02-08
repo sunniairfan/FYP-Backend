@@ -34,7 +34,7 @@ function getIndexNameForDate(dateString) {
 }
 
 // Create uploads directory if it doesn't exist
-const uploadsDir = path.join(__dirname, "../Uploads/apks");
+const uploadsDir = path.join(__dirname, "../uploads/apks");
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
@@ -161,7 +161,8 @@ async function analyzeApp(sha256, esClient) {
       ).length;
     }
 
-    const securityScore = report.security_score || 0;
+    // MobSF provides security score in appsec.security_score field
+    const securityScore = report.appsec?.security_score || report.security_score || 0;
 
     const mobsfAnalysis = {
       security_score: securityScore,
@@ -171,21 +172,17 @@ async function analyzeApp(sha256, esClient) {
       file_name: uploadRes.file_name || path.basename(filePath),
     };
 
-    let status = "unknown";
-    if (securityScore >= 70) {
-      status = "safe";
-    } else if (securityScore < 40) {
-      status = "malicious";
-    } else {
-      status = "suspicious";
-    }
-
     console.log(`[MobSF Analysis] Analysis complete:`, {
       security_score: securityScore,
-      status: status,
       dangerous_permissions: dangerousPermissions.length,
       high_risk_findings: highRiskFindings,
     });
+
+    // Determine MobSF status based on security score
+    let mobsfStatus = "unknown";
+    if (securityScore >= 70) mobsfStatus = "safe";
+    else if (securityScore < 40) mobsfStatus = "malicious";
+    else mobsfStatus = "suspicious";
 
     await esClient.update({
       index: dynamicIndex,
@@ -195,7 +192,7 @@ async function analyzeApp(sha256, esClient) {
           mobsfAnalysis,
           lastMobsfAnalysis: new Date().toISOString(),
           mobsfHash: md5Hash,
-          status,
+          mobsfStatus: mobsfStatus,
           mobsfScanType: uploadRes.scan_type,
         },
       },
@@ -206,7 +203,7 @@ async function analyzeApp(sha256, esClient) {
     return {
       success: true,
       analysis: mobsfAnalysis,
-      app: { ...appData, status },
+      app: appData,
       mobsfHash: md5Hash,
     };
   } catch (error) {
@@ -231,7 +228,7 @@ async function analyzeApp(sha256, esClient) {
           id: docId,
           body: {
             doc: {
-              status: "analysis_failed",
+              mobsfStatus: "analysis_failed",
               lastMobsfAnalysis: new Date().toISOString(),
               mobsfError: error.message,
             },
@@ -294,8 +291,11 @@ async function analyzeAppWithVirusTotal(sha256, esClient) {
             detectedEngines: vtResult.detectedEngines,
             maliciousCount: vtResult.maliciousCount,
             suspiciousCount: vtResult.suspiciousCount,
+            undetectedCount: vtResult.undetectedCount || 0,
+            results: vtResult.results || {},
             scanTime: vtResult.scanTime,
             analysisId: vtResult.analysisId,
+            analysisDate: new Date().toISOString(),
           },
           lastVirusTotalAnalysis: new Date().toISOString(),
         },
@@ -456,6 +456,394 @@ router.get("/mobsf/status", async (req, res) => {
   res.json({ mobsf_connected: connected });
 });
 
+// GET /virustotal-results/:sha256 - View VirusTotal analysis results - REQUIRES WEB AUTH
+router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const sha256 = req.params.sha256;
+  
+  try {
+    const selectedDate = req.query.date || new Date().toISOString().split("T")[0];
+    const indexName = getIndexNameForDate(selectedDate);
+    
+    console.log(`[VT Results] Looking for app ${sha256} in index: ${indexName}`);
+    
+    const searchRes = await esClient.search({
+      index: indexName,
+      size: 1,
+      query: { term: { sha256: { value: sha256 } } },
+    });
+
+    if (searchRes.hits.hits.length === 0) {
+      return res.status(404).send(`
+        <html>
+          <head>
+            <title>App Not Found</title>
+            <style>
+              body { background: #0d1b2a; color: white; font-family: Arial; text-align: center; padding: 50px; }
+              .error { background: #e63946; padding: 20px; border-radius: 10px; display: inline-block; }
+              a { color: #90e0ef; text-decoration: none; }
+            </style>
+          </head>
+          <body>
+            <div class="error">
+              <h1>❌ App Not Found</h1>
+              <p>The requested app was not found in the database.</p>
+              <a href="/uploadapp/apps">← Back to Apps</a>
+            </div>
+          </body>
+        </html>
+      `);
+    }
+
+    const appData = searchRes.hits.hits[0]._source;
+    const vtAnalysis = appData.virusTotalAnalysis;
+
+    if (!vtAnalysis) {
+      return res.status(400).send(`
+        <html>
+          <head>
+            <title>No VirusTotal Analysis</title>
+            <style>
+              body { background: #0d1b2a; color: white; font-family: Arial; text-align: center; padding: 50px; }
+              .warning { background: #ffb703; color: #1b263b; padding: 20px; border-radius: 10px; display: inline-block; }
+              a { color: #0077b6; text-decoration: none; font-weight: bold; }
+            </style>
+          </head>
+          <body>
+            <div class="warning">
+              <h1>⚠️ No VirusTotal Analysis Available</h1>
+              <p>This app has not been analyzed with VirusTotal yet.</p>
+              <a href="/uploadapp/apps">← Back to Apps</a>
+            </div>
+          </body>
+        </html>
+      `);
+    }
+
+    // Generate HTML page with VirusTotal results
+    const html = `
+      <html>
+      <head>
+        <title>VirusTotal Results - ${appData.packageName}</title>
+        <style>
+          * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+          }
+
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #0a192f;
+            color: #cbd5e1;
+            min-height: 100vh;
+            padding: 20px;
+          }
+
+          .container {
+            max-width: 1000px;
+            margin: 0 auto;
+          }
+
+          .back-btn {
+            display: inline-block;
+            margin-bottom: 20px;
+            padding: 8px 16px;
+            background: #2563eb;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+          }
+
+          .back-btn:hover {
+            background: #1d4ed8;
+          }
+
+          .header {
+            text-align: center;
+            margin-bottom: 25px;
+          }
+
+          h1 {
+            color: #e2e8f0;
+            font-size: 24px;
+            margin: 0 0 8px 0;
+            font-weight: 600;
+          }
+
+          .app-info {
+            color: #94a3b8;
+            font-size: 13px;
+          }
+          .back-btn {
+            display: inline-block;
+            margin: 20px 0;
+            padding: 8px 16px;
+            background: #2563eb;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+          }
+          .back-btn:hover {
+            background: #1d4ed8;
+          }
+          .summary-card {
+            background: #112240;
+            border: 1px solid #1d3557;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+          }
+          .summary-title {
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #e2e8f0;
+          }
+          .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+          }
+          .stat-box {
+            background: #0a192f;
+            border: 1px solid #1d3557;
+            padding: 15px;
+            border-radius: 6px;
+            text-align: center;
+          }
+          .stat-label {
+            color: #94a3b8;
+            font-size: 11px;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            font-weight: 500;
+          }
+          .stat-value {
+            font-size: 22px;
+            font-weight: bold;
+            color: #60a5fa;
+          }
+          .stat-value.malicious {
+            color: #ef4444;
+          }
+          .stat-value.suspicious {
+            color: #ef4444;
+          }
+          .stat-value.safe {
+            color: #10b981;
+          }
+          .status-badge {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 700;
+            margin: 15px 0;
+            text-transform: uppercase;
+          }
+          .status-badge.safe {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+            border: 1px solid #10b981;
+          }
+          .status-badge.malicious {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+            border: 1px solid #ef4444;
+          }
+          .status-badge.suspicious {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+            border: 1px solid #ef4444;
+          }
+          .detections-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-top: 20px;
+          }
+          .detections-table th {
+            background: linear-gradient(135deg, #415a77, #778da9);
+            padding: 15px;
+            text-align: left;
+            font-weight: bold;
+          }
+          .detections-table td {
+            background: #1b263b;
+            padding: 12px 15px;
+            border-bottom: 1px solid #415a77;
+          }
+          .detections-table tr:last-child td {
+            border-bottom: none;
+          }
+          .detections-table tr:hover td {
+            background: #273b54;
+          }
+          .engine-name {
+            font-weight: 600;
+            color: #90e0ef;
+          }
+          .result-detected {
+            color: #e63946;
+            font-weight: bold;
+          }
+          .result-clean {
+            color: #52b788;
+          }
+          .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #1d3557;
+            gap: 15px;
+          }
+          .info-row:last-child {
+            border-bottom: none;
+          }
+          .info-label {
+            color: #94a3b8;
+            font-weight: 500;
+            font-size: 12px;
+            min-width: 120px;
+          }
+          .info-value {
+            color: #cbd5e1;
+            font-family: 'Courier New', monospace;
+            word-break: break-all;
+            font-size: 11px;
+            text-align: right;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <a href="/uploadapp/apps" class="back-btn">← Back to Apps</a>
+          
+          <div class="header">
+            <h1>VirusTotal Analysis Results</h1>
+            <div class="app-info">
+              <strong>${appData.appName || 'Unknown App'}</strong><br>
+              ${appData.packageName}
+            </div>
+          </div>
+
+          <div class="summary-card">
+            <div class="summary-title">Detection Summary</div>
+            
+            <div style="text-align: center;">
+              <div class="status-badge ${vtAnalysis.status}">
+                ${vtAnalysis.status === 'malicious' ? 'MALICIOUS' : 
+                  vtAnalysis.status === 'suspicious' ? 'SUSPICIOUS' : 
+                  'SAFE'}
+              </div>
+            </div>
+
+            <div class="stats-grid">
+              <div class="stat-box">
+                <div class="stat-label">Detection Ratio</div>
+                <div class="stat-value">${vtAnalysis.detectionRatio || 'N/A'}</div>
+              </div>
+              <div class="stat-box">
+                <div class="stat-label">Malicious</div>
+                <div class="stat-value malicious">${vtAnalysis.maliciousCount || 0}</div>
+              </div>
+              <div class="stat-box">
+                <div class="stat-label">Suspicious</div>
+                <div class="stat-value suspicious">${vtAnalysis.suspiciousCount || 0}</div>
+              </div>
+              <div class="stat-box">
+                <div class="stat-label">Undetected</div>
+                <div class="stat-value safe">${vtAnalysis.undetectedCount || 0}</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="summary-card">
+            <div class="summary-title">File Information</div>
+            <div class="info-row">
+              <span class="info-label">SHA-256:</span>
+              <span class="info-value">${appData.sha256 || 'N/A'}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">File Size:</span>
+              <span class="info-value">${appData.sizeMB?.toFixed(2) || 0} MB</span>
+            </div>
+          </div>
+
+          ${vtAnalysis.results && Object.keys(vtAnalysis.results).length > 0 ? `
+            <div class="summary-card">
+              <div class="summary-title">Detection Details (${Object.keys(vtAnalysis.results).length} Engines)</div>
+              <table class="detections-table">
+                <thead>
+                  <tr>
+                    <th>Antivirus Engine</th>
+                    <th>Category</th>
+                    <th>Result</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${Object.entries(vtAnalysis.results)
+                    .sort((a, b) => {
+                      // Sort: detected first, then by engine name
+                      if (a[1].category === 'malicious' && b[1].category !== 'malicious') return -1;
+                      if (b[1].category === 'malicious' && a[1].category !== 'malicious') return 1;
+                      if (a[1].category === 'suspicious' && b[1].category !== 'suspicious') return -1;
+                      if (b[1].category === 'suspicious' && a[1].category !== 'suspicious') return 1;
+                      return a[0].localeCompare(b[0]);
+                    })
+                    .map(([engine, result]) => `
+                      <tr>
+                        <td class="engine-name">${engine}</td>
+                        <td>${result.category || 'undetected'}</td>
+                        <td class="${result.category === 'undetected' ? 'result-clean' : 'result-detected'}">
+                          ${result.result || 'Clean'}
+                        </td>
+                      </tr>
+                    `).join('')}
+                </tbody>
+              </table>
+            </div>
+          ` : ''}
+        </div>
+      </body>
+      </html>
+    `;
+
+    res.send(html);
+  } catch (err) {
+    console.error("[VT Results] Error:", err.message);
+    res.status(500).send(`
+      <html>
+        <head>
+          <title>Error</title>
+          <style>
+            body { background: #0d1b2a; color: white; font-family: Arial; text-align: center; padding: 50px; }
+            .error { background: #e63946; padding: 20px; border-radius: 10px; display: inline-block; }
+            a { color: #90e0ef; text-decoration: none; }
+          </style>
+        </head>
+        <body>
+          <div class="error">
+            <h1>❌ Error</h1>
+            <p>Failed to load VirusTotal results: ${err.message}</p>
+            <a href="/uploadapp/apps">← Back to Apps</a>
+          </div>
+        </body>
+      </html>
+    `);
+  }
+});
+
 // GET /apps - View uploaded apps (HTML page with calendar) - REQUIRES WEB AUTH
 router.get("/apps", requireWebAuth, async (req, res) => {
   const esClient = req.app.get("esClient");
@@ -478,391 +866,863 @@ router.get("/apps", requireWebAuth, async (req, res) => {
       apps = result.hits.hits.map((hit) => ({
         ...hit._source,
         id: hit._id,
+        appType: hit._source.appType || 'system'
       }));
     } catch (indexError) {
       console.log(`[Apps Route] Index ${indexName} not found or no data`);
     }
+    
+    // Separate apps by type
+    const userApps = apps.filter(app => app.appType === 'user');
+    const systemApps = apps.filter(app => app.appType === 'system');
 
     let html = `
-      <html>
+      <!DOCTYPE html>
+      <html lang="en">
       <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Uploaded Apps - Android Malware Detector</title>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
         <style>
-          body {
-            background-color: #0d1b2a;
-            color: white;
-            font-family: Arial, sans-serif;
+          * {
             margin: 0;
-            padding: 20px;
-            line-height: 1.6;
+            padding: 0;
+            box-sizing: border-box;
           }
+
+          html {
+            position: relative;
+            overflow-x: hidden;
+          }
+          
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #0a192f;
+            color: #94a3b8;
+            min-height: 100vh;
+            display: flex;
+            position: relative;
+            overflow-x: hidden;
+          }
+
+          /* Sidebar styles */
+          .sidebar {
+            width: 200px;
+            background: #112240;
+            height: 100vh;
+            padding: 20px 0;
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            left: -200px;
+            top: 0;
+            z-index: 1000;
+            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);
+            transition: left 0.3s ease;
+          }
+
+          .sidebar.open {
+            left: 0;
+          }
+
+          .logo {
+            padding: 0 18px 25px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            color: white;
+            font-weight: 600;
+            font-size: 17px;
+            border-bottom: 1px solid #1d3557;
+            margin-bottom: 20px;
+          }
+
+          .logo-icon {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            color: white;
+          }
+
+          .nav-item {
+            padding: 12px 18px;
+            color: #94a3b8;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transition: all 0.2s;
+            font-size: 14px;
+            cursor: pointer;
+          }
+
+          .nav-item:hover {
+            background: #1d3557;
+            color: white;
+          }
+
+          .nav-item.active {
+            background: #000000;
+            color: white;
+            border-left: 3px solid #2563eb;
+          }
+
+          .nav-icon {
+            width: 20px;
+            text-align: center;
+            font-size: 16px;
+          }
+
+          .logout-nav {
+            margin-top: auto;
+            padding: 12px 18px;
+            color: #ef4444;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transition: all 0.2s;
+            font-size: 14px;
+            border-top: 1px solid #1d3557;
+          }
+
+          .logout-nav:hover {
+            background: #7f1d1d;
+            color: white;
+          }
+
+          /* Main content */
+          .main-content {
+            margin-left: 0;
+            flex: 1;
+            padding: 0;
+            width: 100%;
+            transition: margin-left 0.3s ease;
+            transform: none;
+          }
+
+          .main-content.shifted {
+            margin-left: 200px;
+          }
+
+          .menu-btn {
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            font-size: 18px;
+            cursor: pointer;
+            padding: 4px 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: color 0.3s;
+          }
+
+          .menu-btn:hover {
+            color: white;
+          }
+
+          .overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 999;
+          }
+
+          .overlay.active {
+            display: block;
+          }
+
+          .top-bar {
+            background: #112240;
+            padding: 8px 15px 8px 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #1d3557;
+          }
+
+          .user-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #e2e8f0;
+            font-size: 14px;
+            font-weight: 500;
+          }
+
+          .user-avatar {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 14px;
+          }
+
+          .container {
+            padding: 30px;
+            max-width: 1400px;
+            margin: 0 auto;
+            width: 100%;
+          }
+
           .header {
             text-align: center;
             margin-bottom: 30px;
           }
+
           h1 {
-            font-size: 2.5rem;
-            color: #ffffff;
-            margin-bottom: 10px;
+            color: white;
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
           }
+
           .subtitle {
-            color: #778da9;
-            font-size: 1.1rem;
+            color: #64748b;
+            font-size: 14px;
           }
+
+          .controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+            gap: 15px;
+          }
+
           .date-selector {
-            background: linear-gradient(135deg, #1b263b, #415a77);
-            padding: 15px 25px;
-            border-radius: 10px;
-            margin: 15px 0;
             display: flex;
+            gap: 12px;
+            padding: 12px 20px;
+            background: rgba(17, 34, 64, 0.6);
+            border: 1px solid #1d3557;
+            border-radius: 8px;
             align-items: center;
-            justify-content: center;
-            gap: 15px;
           }
+
           .date-selector label {
-            color: #90e0ef;
-            font-weight: bold;
+            display: none;
           }
+          
           .date-selector input[type="date"] {
-            background: #0d1b2a;
-            border: 2px solid #415a77;
-            border-radius: 6px;
-            padding: 8px 12px;
-            color: white;
-            font-size: 1rem;
-          }
-          .date-selector button {
-            background: linear-gradient(135deg, #0077b6, #0096c7);
+            background: transparent;
             border: none;
-            padding: 8px 16px;
+            color: #94a3b8;
+            padding: 5px 8px;
+            font-size: 14px;
+            cursor: pointer;
+          }
+          
+          .date-selector input:focus {
+            outline: none;
+          }
+          
+          .date-selector input[type="date"]::-webkit-calendar-picker-indicator {
+            filter: invert(0.6);
+            cursor: pointer;
+          }
+          
+          .date-selector button, .search-section button {
+            background: #2563eb;
+            border: none;
+            padding: 7px 15px;
             border-radius: 6px;
             color: white;
-            font-weight: bold;
+            font-size: 13px;
+            font-weight: 500;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: all 0.2s;
           }
-          .date-selector button:hover {
-            background: linear-gradient(135deg, #005577, #007bb6);
-            transform: translateY(-1px);
+          
+          .date-selector button:hover, .search-section button:hover {
+            background: #1d4ed8;
           }
+          
           .search-section {
-            background: linear-gradient(135deg, #1b263b, #415a77);
-            padding: 15px 25px;
-            border-radius: 10px;
-            margin: 15px 0;
             display: flex;
+            gap: 12px;
+            padding: 12px 20px;
+            background: rgba(17, 34, 64, 0.6);
+            border: 1px solid #1d3557;
+            border-radius: 8px;
             align-items: center;
-            justify-content: center;
-            gap: 15px;
+            min-width: 350px;
           }
+          
           .search-section label {
-            color: #90e0ef;
-            font-weight: bold;
+            display: none;
           }
+          
           .search-section input[type="text"] {
-            background: #0d1b2a;
-            border: 2px solid #415a77;
-            border-radius: 6px;
-            padding: 8px 12px;
-            color: white;
-            font-size: 1rem;
-            width: 300px;
-          }
-          .search-section select {
-            background: #0d1b2a;
-            border: 2px solid #415a77;
-            border-radius: 6px;
-            padding: 8px 12px;
-            color: white;
-            font-size: 1rem;
-          }
-          .search-section button {
-            background: linear-gradient(135deg, #0077b6, #0096c7);
+            background: transparent;
             border: none;
-            padding: 8px 16px;
-            border-radius: 6px;
-            color: white;
-            font-weight: bold;
-            cursor: pointer;
-            transition: all 0.3s ease;
+            color: #94a3b8;
+            padding: 5px;
+            font-size: 14px;
+            width: 100%;
+            flex: 1;
           }
-          .search-section button:hover {
-            background: linear-gradient(135deg, #005577, #007bb6);
-            transform: translateY(-1px);
+          
+          .search-section input:focus {
+            outline: none;
           }
-          .current-index {
-            background: linear-gradient(135deg, #1b263b, #415a77);
+          
+          .search-section input::placeholder {
+            color: #64748b;
+          }
+          
+          .search-section button {
+            display: none;
+          }
+
+          .clear-btn {
+            background: rgba(220, 38, 38, 0.15);
+            border: 1px solid rgba(220, 38, 38, 0.4);
+            color: #ef4444;
             padding: 10px 20px;
             border-radius: 8px;
-            margin: 10px 0;
-            font-family: 'Courier New', monospace;
-            color: #90e0ef;
-          }
-          .stats {
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.3s;
             display: flex;
-            justify-content: center;
-            gap: 30px;
-            margin: 20px 0;
+            align-items: center;
+            gap: 8px;
+            white-space: nowrap;
+            min-width: fit-content;
           }
+
+          .clear-btn:hover {
+            background: rgba(220, 38, 38, 0.25);
+            border-color: #dc2626;
+          }
+          
+          .clear-btn i {
+            font-size: 15px;
+          }
+
+          .current-index {
+            background: #112240;
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            font-family: 'Courier New', monospace;
+            color: #60a5fa;
+            font-size: 13px;
+            text-align: center;
+            border: 1px solid #1d3557;
+          }
+
+          .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+          }
+
           .stat-card {
-            background: linear-gradient(135deg, #1b263b, #415a77);
-            padding: 15px 25px;
-            border-radius: 10px;
+            background: #112240;
+            border: 1px solid #1d3557;
+            border-radius: 12px;
+            padding: 20px;
             text-align: center;
           }
-          .stat-number {
-            font-size: 1.8rem;
-            font-weight: bold;
-            color: #90e0ef;
-          }
+
           .stat-label {
-            font-size: 0.9rem;
-            color: #cad2c5;
+            color: #94a3b8;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
           }
+
+          .stat-value {
+            font-size: 32px;
+            font-weight: bold;
+          }
+
+          .stat-card.total .stat-value { color: #3b82f6; }
+          .stat-card.malicious .stat-value { color: #ef4444; }
+          .stat-card.safe .stat-value { color: #10b981; }
+          .stat-card.suspicious .stat-value { color: #ef4444; }
+          .stat-card.unknown .stat-value { color: #6b7280; }
+
           table {
             width: 100%;
-            border-spacing: 0;
-            border-collapse: separate;
-            border-radius: 12px;
+            border-collapse: collapse;
+            background: #112240;
+            border-radius: 8px;
             overflow: hidden;
-            background-color: #1b263b;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
           }
+
           thead {
-            background: linear-gradient(135deg, #415a77, #778da9);
+            background: #1d3557;
           }
+
           th {
-            padding: 18px 15px;
+            padding: 12px 15px;
             text-align: left;
-            font-size: 1rem;
-            font-weight: bold;
-            color: white;
+            color: #94a3b8;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid #1d3557;
           }
-          th:nth-child(1) { width: 20%; }
-          th:nth-child(2) { width: 20%; }
-          th:nth-child(3) { width: 20%; }
-          th:nth-child(4) { width: 20%; }
-          th:nth-child(5) { width: 20%; }
+
           td {
             padding: 15px;
-            border-bottom: 1px solid #415a77;
-            vertical-align: middle;
+            border-bottom: 1px solid #1d3557;
+            color: #cbd5e1;
+            font-size: 13px;
           }
-          tr:hover {
-            background-color: #273b54;
-            transition: background-color 0.3s ease;
-          }
+
           tr:last-child td {
             border-bottom: none;
           }
+
+          tr:hover {
+            background: #1d3557;
+          }
+
+          .file-info {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-top: 2px;
+          }
+
           .status {
-            font-weight: bold;
-            padding: 8px 12px;
-            border-radius: 6px;
-            display: inline-block;
-            font-size: 0.85rem;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            display: inline-block;
           }
-          .status.unknown {
-            background-color: #ffb703;
-            color: #1b263b;
-          }
+
           .status.safe {
-            background-color: #52b788;
-            color: white;
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
           }
+
           .status.malicious {
-            background-color: #e63946;
-            color: white;
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
           }
+
           .status.suspicious {
-            background-color: #f77f00;
-            color: white;
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
           }
-          .status.sandbox_submitted {
-            background-color: #f77f00;
-            color: white;
+
+          .status.unknown {
+            background: rgba(107, 114, 128, 0.2);
+            color: #6b7280;
           }
+
+          .status.uploaded {
+            background: rgba(148, 163, 184, 0.2);
+            color: #94a3b4;
+          }
+
           .actions {
             min-width: 200px;
           }
+
           button {
-            padding: 8px 14px;
+            padding: 8px 16px;
             border: none;
             border-radius: 6px;
-            color: white;
-            font-weight: 500;
             cursor: pointer;
-            transition: all 0.3s ease;
+            font-size: 11px;
+            font-weight: 500;
+            transition: all 0.2s;
             margin: 2px;
-            font-size: 0.85rem;
+            width: 130px;
+            white-space: nowrap;
           }
-          .btn-mobsf {
-            background: linear-gradient(135deg, #6f42c1, #8e3af5);
+
+          .btn-mobsf, .btn-report, .btn-view, .btn-sandbox, .btn-vt, .btn-download {
+            background: #2563eb;
+            color: white;
+            flex: 0 0 auto;
           }
-          .btn-mobsf:hover {
-            background: linear-gradient(135deg, #5a2a9f, #6f42c1);
-            transform: translateY(-1px);
+
+          .btn-remarks {
+            background: #059669;
+            color: white;
+            flex: 0 0 auto;
           }
-          .btn-vt {
-            background: linear-gradient(135deg, #00b4d8, #48cae4);
+
+          .btn-remarks:hover {
+            background: #047857;
           }
-          .btn-vt:hover {
-            background: linear-gradient(135deg, #0096c7, #00b4d8);
-            transform: translateY(-1px);
+
+          .btn-mobsf:hover, .btn-report:hover, .btn-view:hover, .btn-sandbox:hover, .btn-vt:hover, .btn-download:hover {
+            background: #1d4ed8;
           }
-          .btn-report {
-            background: linear-gradient(135deg, #dc3545, #e74c3c);
-          }
-          .btn-report:hover {
-            background: linear-gradient(135deg, #c82333, #dc3545);
-            transform: translateY(-1px);
-          }
-          .btn-sandbox {
-            background: linear-gradient(135deg, #0077b6, #0096c7);
-          }
-          .btn-sandbox:hover {
-            background: linear-gradient(135deg, #005577, #007bb6);
-            transform: translateY(-1px);
-          }
-          .btn-download {
-            background: linear-gradient(135deg, #52b788, #74c69d);
-          }
-          .btn-download:hover {
-            background: linear-gradient(135deg, #40916c, #52b788);
-            transform: translateY(-1px);
-          }
+
           .btn-delete {
-            background: linear-gradient(135deg, #e63946, #f77f00);
+            width: 28px;
+            height: 28px;
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid #7f1d1d;
+            color: #ef4444;
+            padding: 0;
+            border-radius: 5px;
+            position: absolute;
+            right: 10px;
+            bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
           }
+
           .btn-delete:hover {
-            background: linear-gradient(135deg, #d00000, #e63946);
-            transform: translateY(-1px);
+            background: #7f1d1d;
+            color: white;
           }
-          .btn-disabled {
-            background: #6c757d !important;
-            cursor: not-allowed !important;
-            opacity: 0.6;
+
+          .btn-delete i {
+            font-size: 12px;
           }
-          .btn-disabled:hover {
-            transform: none !important;
+
+          tr {
+            position: relative;
           }
-          form {
-            margin: 0;
-            display: inline-block;
+
+          .btn-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            align-items: center;
           }
-          .file-info {
-            font-size: 0.85rem;
-            color: #cad2c5;
-            line-height: 1.4;
+
+          .btn-group-left {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            flex: 1;
           }
+
           .app-name {
             font-weight: 600;
-            color: #90e0ef;
+            color: white;
           }
+
           .package-name {
             font-family: 'Courier New', monospace;
-            font-size: 0.85rem;
-            color: #778da9;
+            font-size: 12px;
+            color: #94a3b8;
           }
+
           .no-apps {
             text-align: center;
             padding: 50px;
-            color: #778da9;
-            font-size: 1.2rem;
+            color: #94a3b8;
+            font-size: 14px;
           }
+
           .permissions {
-            font-size: 0.8rem;
-            color: #ffb703;
+            font-size: 11px;
+            color: #60a5fa;
+            margin-top: 2px;
           }
+
           .mobsf-info, .vt-info {
-            font-size: 0.8rem;
-            color: #90e0ef;
-            margin-top: 5px;
+            font-size: 11px;
+            color: #60a5fa;
+            margin-top: 4px;
           }
+
           .security-score {
             font-weight: bold;
-            padding: 4px 8px;
+            padding: 3px 8px;
             border-radius: 4px;
-            font-size: 0.8rem;
+            font-size: 11px;
+            display: inline-block;
+            margin-top: 2px;
           }
+
           .score-high {
-            background-color: #52b788;
-            color: white;
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
           }
+
           .score-medium {
-            background-color: #ffb703;
-            color: #1b263b;
+            background: rgba(245, 158, 11, 0.2);
+            color: #f59e0b;
           }
+
           .score-low {
-            background-color: #e63946;
-            color: white;
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
           }
+
           .mobsf-status {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            padding: 10px 15px;
-            border-radius: 8px;
-            font-size: 0.9rem;
-            font-weight: bold;
+            padding: 6px 12px;
+            font-size: 12px;
+            font-weight: 500;
+            background: #112240;
+            border: 1px solid #1d3557;
+            border-radius: 6px;
+            margin-right: 12px;
           }
+
           .mobsf-connected {
-            background-color: #52b788;
+            color: #10b981;
+          }
+
+          .mobsf-disconnected {
+            color: #ef4444;
+          }
+
+          /* SOC Remarks Modal */
+          .modal {
+            display: none;
+            position: fixed;
+            z-index: 10000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            align-items: center;
+            justify-content: center;
+          }
+
+          .modal.active {
+            display: flex;
+          }
+
+          .modal-content {
+            background: #112240;
+            border: 1px solid #1d3557;
+            border-radius: 8px;
+            padding: 30px;
+            width: 90%;
+            max-width: 600px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+          }
+
+          .modal-header {
+            color: #e2e8f0;
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 20px;
+          }
+
+          .modal-body {
+            margin-bottom: 20px;
+          }
+
+          .form-group {
+            margin-bottom: 15px;
+          }
+
+          .form-group label {
+            display: block;
+            color: #94a3b8;
+            font-size: 13px;
+            margin-bottom: 8px;
+            font-weight: 500;
+          }
+
+          .form-group textarea {
+            width: 100%;
+            background: #0a192f;
+            border: 1px solid #1d3557;
+            border-radius: 6px;
+            padding: 12px;
+            color: #e2e8f0;
+            font-size: 13px;
+            font-family: inherit;
+            resize: vertical;
+            min-height: 120px;
+          }
+
+          .form-group textarea:focus {
+            outline: none;
+            border-color: #2563eb;
+          }
+
+          .form-group select {
+            width: 100%;
+            background: #0a192f;
+            border: 1px solid #1d3557;
+            border-radius: 6px;
+            padding: 10px;
+            color: #e2e8f0;
+            font-size: 13px;
+          }
+
+          .form-group select:focus {
+            outline: none;
+            border-color: #2563eb;
+          }
+
+          .modal-footer {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+          }
+
+          .btn-modal {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+          }
+
+          .btn-submit {
+            background: #2563eb;
             color: white;
           }
-          .mobsf-disconnected {
-            background-color: #e63946;
-            color: white;
+
+          .btn-submit:hover {
+            background: #1d4ed8;
+          }
+
+          .btn-cancel {
+            background: #374151;
+            color: #e2e8f0;
+          }
+
+          .btn-cancel:hover {
+            background: #1f2937;
           }
         </style>
       </head>
       <body>
-        <div id="mobsf-status" class="mobsf-status">Checking MobSF...</div>
-        
-        <div class="header">
-          <h1>📱 Uploaded Apps</h1>
-          <div class="subtitle">Android Malware Detection System with MobSF & VirusTotal Integration</div>
-          
-          <div class="date-selector">
-            <label for="date-picker">Select Date:</label>
-            <input type="date" id="date-picker" value="${selectedDate}" />
-            <button onclick="loadAppsForDate()">Load Apps</button>
-            ${!isToday ? `<button onclick="loadToday()">Today</button>` : ""}
+        <!-- Sidebar -->
+        <div class="sidebar" id="sidebar">
+          <div class="logo">
+            <div class="logo-icon">
+              <i class="fas fa-shield-alt"></i>
+            </div>
+            <span>CYBER WOLF</span>
           </div>
           
-          <div class="search-section">
-            <label for="search-input">Search Apps:</label>
-            <input type="text" id="search-input" placeholder="e.g., rg cipher vpn" onkeyup="performSearch()">
-            <button onclick="performSearch()">Search</button>
-          </div>
+          <a href="/" class="nav-item">
+            <i class="fas fa-home nav-icon"></i>
+            <span>Home</span>
+          </a>
           
-          <div class="current-index">Using Index: ${indexName}</div>
+          <a href="/dashboard" class="nav-item">
+            <i class="fas fa-chart-line nav-icon"></i>
+            <span>Dashboard</span>
+          </a>
+          
+          <a href="/uploadapp/apps" class="nav-item active">
+            <i class="fas fa-mobile-alt nav-icon"></i>
+            <span>App Manager</span>
+          </a>
+          
+          <a href="#" class="nav-item">
+            <i class="fas fa-cog nav-icon"></i>
+            <span>Settings</span>
+          </a>
+          
+          <a href="/logout" class="logout-nav">
+            <i class="fas fa-sign-out-alt nav-icon"></i>
+            <span>Logout</span>
+          </a>
         </div>
-        
-        <div class="stats">
-          <div class="stat-card">
-            <div class="stat-number">${apps.length}</div>
-            <div class="stat-label">Total Apps</div>
+
+        <!-- Overlay -->
+        <div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
+
+        <!-- Main Content -->
+        <div class="main-content" id="mainContent">
+          <!-- Top Bar -->
+          <div class="top-bar">
+            <button class="menu-btn" onclick="toggleSidebar()">
+              <i class="fas fa-bars"></i>
+            </button>
+            
+            <div class="user-info">
+              <div id="mobsf-status" class="mobsf-status">Checking MobSF...</div>
+              <span>${req.session.username || 'User'}</span>
+              <div class="user-avatar">${(req.session.username || 'U')[0].toUpperCase()}</div>
+            </div>
           </div>
-          <div class="stat-card">
-            <div class="stat-number">${apps.filter((app) => app.status === "malicious").length}</div>
-            <div class="stat-label">Malicious</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-number">${apps.filter((app) => app.status === "safe").length}</div>
-            <div class="stat-label">Safe</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-number">${apps.filter((app) => app.status === "suspicious").length}</div>
-            <div class="stat-label">Suspicious</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-number">${apps.filter((app) => app.status === "unknown").length}</div>
-            <div class="stat-label">Unknown</div>
-          </div>
-        </div>
+          
+          <div class="container">
+            <div class="header">
+              <h1>Uploaded Apps</h1>
+              <div class="subtitle">Android Malware Detection System</div>
+            </div>
+            
+            <div class="controls">
+              <div class="date-selector">
+                <i class="fas fa-calendar-alt" style="color: #64748b;"></i>
+                <input type="date" id="date-picker" value="${selectedDate}" onchange="loadAppsForDate()" />
+              </div>
+              
+              <div class="search-section">
+                <i class="fas fa-search" style="color: #64748b;"></i>
+                <input type="text" id="search-input" placeholder="Search by app name..." onkeyup="performSearch()">
+              </div>
+
+              <button class="clear-btn" onclick="clearTodayData()">
+                <i class="fas fa-trash-alt"></i>
+                Clear Today's Data
+              </button>
+            </div>
+            
+            <!-- Filter Dropdown -->
+            <div style="margin-bottom: 20px;">
+              <label for="appTypeFilter" style="color: #94a3b8; font-weight: 500; margin-right: 10px;">Filter by App Type:</label>
+              <select id="appTypeFilter" onchange="filterAppsByType()" style="padding: 8px 12px; background: #1e293b; color: white; border: 1px solid #334155; border-radius: 6px; font-size: 14px; cursor: pointer;">
+                <option value="all">All Apps</option>
+                <option value="user">User Apps Only</option>
+                <option value="system">System Apps Only</option>
+              </select>
+            </div>
+            
+            <!-- Total Apps Stats -->
+            <div class="stats-grid">
+              <div class="stat-card total">
+                <div class="stat-label">Total Apps</div>
+                <div class="stat-value">${apps.length}</div>
+              </div>
+              <div class="stat-card malicious">
+                <div class="stat-label">Malicious</div>
+                <div class="stat-value">${apps.filter((app) => app.status === "malicious").length}</div>
+              </div>
+              <div class="stat-card safe">
+                <div class="stat-label">Safe</div>
+                <div class="stat-value">${apps.filter((app) => app.status === "safe").length}</div>
+              </div>
+              <div class="stat-card suspicious">
+                <div class="stat-label">Suspicious</div>
+                <div class="stat-value">${apps.filter((app) => app.status === "suspicious").length}</div>
+              </div>
+              <div class="stat-card unknown">
+                <div class="stat-label">Unknown</div>
+                <div class="stat-value">${apps.filter((app) => app.status === "unknown").length}</div>
+              </div>
+            </div>
     `;
 
     if (apps.length === 0) {
@@ -894,6 +1754,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
         const hasMobsfAnalysis = app.mobsfAnalysis && app.mobsfAnalysis.security_score !== undefined;
         const hasVirusTotalAnalysis = app.virusTotalAnalysis && app.virusTotalAnalysis.detectionRatio;
         const hasApkFile = app.apkFilePath && app.apkFileName;
+        const appType = app.appType || 'system';
 
         let scoreClass = "score-medium";
         if (hasMobsfAnalysis) {
@@ -902,7 +1763,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
         }
         
         html += `
-          <tr>
+          <tr data-app-type="${appType}">
             <td>
               <div class="app-name">${app.appName || "Unknown App"}</div>
               <div class="file-info">Uploaded: ${uploadDate}</div>
@@ -914,7 +1775,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
               <div class="package-name">${app.packageName}</div>
               ${permissionCount > 0 ? `<div class="permissions">${permissionCount} permissions</div>` : ""}
               ${hasMobsfAnalysis && app.mobsfAnalysis.dangerous_permissions ? 
-                `<div class="permissions">⚠️ ${app.mobsfAnalysis.dangerous_permissions.length} dangerous perms</div>` : ""}
+                `<div class="permissions">${app.mobsfAnalysis.dangerous_permissions.length} dangerous perms</div>` : ""}
             </td>
             <td>
               <div class="file-info">${fileInfo}</div>
@@ -927,16 +1788,16 @@ router.get("/apps", requireWebAuth, async (req, res) => {
               </span>
               ${hasMobsfAnalysis ? `
                 <div class="mobsf-info">
-                  <span class="security-score ${scoreClass}">MobSF Score: ${app.mobsfAnalysis.security_score}/100</span>
+                  <span class="security-score" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8;">Static Analysis Score: ${app.mobsfAnalysis.security_score}/100</span>
                 </div>
                 <div class="mobsf-info">
-                  Risk: ${app.mobsfAnalysis.malware_probability || "unknown"}
-                  ${app.mobsfAnalysis.high_risk_findings > 0 ? `| 🔴 ${app.mobsfAnalysis.high_risk_findings} high risks` : ""}
+                  ${app.mobsfAnalysis.dangerous_permissions?.length > 0 ? `${app.mobsfAnalysis.dangerous_permissions.length} dangerous permissions` : "No dangerous permissions"}
+                  ${app.mobsfAnalysis.high_risk_findings > 0 ? ` | ${app.mobsfAnalysis.high_risk_findings} high risk findings` : ""}
                 </div>
               ` : ""}
               ${hasVirusTotalAnalysis ? `
                 <div class="vt-info">
-                  <span class="security-score ${app.virusTotalAnalysis.status === 'safe' ? 'score-high' : app.virusTotalAnalysis.status === 'malicious' ? 'score-low' : 'score-medium'}">
+                  <span class="security-score" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8;">
                     VT Detection: ${app.virusTotalAnalysis.detectionRatio}
                   </span>
                 </div>
@@ -947,29 +1808,39 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             </td>
             <td class="actions">
               <div class="btn-group">
-                <button class="btn-mobsf" onclick="runMobsfAnalysis('${app.sha256}', '${app.packageName}')" title="Run MobSF Static Analysis">
-                  ${hasMobsfAnalysis ? "Re-analyze" : "Analyze"} MobSF
-                </button>
-                ${hasMobsfAnalysis ? `
-                  <button class="btn-report" onclick="downloadMobsfReport('${app.sha256}')" title="Download MobSF PDF Report">
-                    PDF Report
+                <div class="btn-group-left">
+                  <button class="btn-sandbox" onclick="uploadToSandbox('${app.sha256}', '${app.packageName}')">
+                    Upload to Sandbox
                   </button>
-                ` : ""}
-                <button class="btn-sandbox" onclick="uploadToSandbox('${app.sha256}', '${app.packageName}')">
-                  Upload to Sandbox
-                </button>
-                <button class="btn-vt" onclick="runVirusTotalAnalysis('${app.sha256}', '${app.packageName}')" title="Run VirusTotal Analysis">
-                  ${hasVirusTotalAnalysis ? "Re-analyze" : "Analyze"} VirusTotal
-                </button>
-                ${app.apkFileName ? `
-                  <button class="btn-download" onclick="downloadFile('${app.apkFileName}')">
-                    Download APK
+                  <button class="btn-mobsf" onclick="runMobsfAnalysis('${app.sha256}', '${app.packageName}')" title="Run MobSF Static Analysis">
+                    ${hasMobsfAnalysis ? "Re-analyze" : "Analyze"} MobSF
                   </button>
-                ` : ""}
-                <button class="btn-delete" onclick="deleteApp('${app.sha256}', '${app.packageName}')">
-                  Delete
-                </button>
+                  ${hasMobsfAnalysis ? `
+                    <button class="btn-report" onclick="downloadMobsfReport('${app.sha256}')" title="Download MobSF PDF Report">
+                      Download PDF
+                    </button>
+                  ` : ""}
+                  ${app.apkFileName ? `
+                    <button class="btn-download" onclick="downloadFile('${app.apkFileName}')">
+                      Download APK
+                    </button>
+                  ` : ""}
+                  <button class="btn-vt" onclick="runVirusTotalAnalysis('${app.sha256}', '${app.packageName}')" title="Run VirusTotal Analysis">
+                    ${hasVirusTotalAnalysis ? "Re-analyze" : "Analyze"} VirusTotal
+                  </button>
+                  ${hasVirusTotalAnalysis ? `
+                    <button class="btn-view" onclick="viewVirusTotalResults('${app.sha256}', '${app.packageName}')" title="View VirusTotal Results">
+                      View Results
+                    </button>
+                  ` : ""}
+                  <button class="btn-remarks" onclick="openRemarksModal('${app.sha256}', '${app.packageName}', '${app.appName || "Unknown App"}')" title="Add SOC Analyst Remarks">
+                    SOC Remarks
+                  </button>
+                </div>
               </div>
+              <button class="btn-delete" onclick="deleteApp('${app.sha256}', '${app.packageName}')" title="Delete App">
+                <i class="fas fa-trash"></i>
+              </button>
             </td>
           </tr>
         `;
@@ -978,26 +1849,71 @@ router.get("/apps", requireWebAuth, async (req, res) => {
       html += `
             </tbody>
           </table>
+          </div>
+        </div>
+
+        <!-- SOC Analyst Remarks Modal -->
+        <div id="remarksModal" class="modal">
+          <div class="modal-content">
+            <div class="modal-header">SOC Analyst Remarks</div>
+            <div class="modal-body">
+              <div class="form-group">
+                <label>Application</label>
+                <input type="text" id="modal-app-name" readonly style="width: 100%; background: #0a192f; border: 1px solid #1d3557; border-radius: 6px; padding: 10px; color: #94a3b8; font-size: 13px;">
+              </div>
+              <div class="form-group">
+                <label>Update Status</label>
+                <select id="modal-status">
+                  <option value="">-- Keep Current Status --</option>
+                  <option value="safe">Safe</option>
+                  <option value="malicious">Malicious</option>
+                  <option value="suspicious">Suspicious</option>
+                  <option value="unknown">Unknown</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>SOC Analyst Remarks</label>
+                <textarea id="modal-remarks" placeholder="Enter your analysis remarks here..."></textarea>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button class="btn-modal btn-cancel" onclick="closeRemarksModal()">Cancel</button>
+              <button class="btn-modal btn-submit" onclick="submitRemarks()">Submit</button>
+            </div>
+          </div>
+        </div>
       `;
     }
 
     html += `
         <script>
+          // Sidebar toggle
+          function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('overlay');
+            const mainContent = document.getElementById('mainContent');
+            
+            sidebar.classList.toggle('open');
+            overlay.classList.toggle('active');
+            mainContent.classList.toggle('shifted');
+          }
+
+          // MobSF Status Check
           fetch(window.location.pathname.replace('/apps', '/mobsf/status'))
             .then(response => response.json())
             .then(data => {
               const statusDiv = document.getElementById('mobsf-status');
               if (data.mobsf_connected) {
-                statusDiv.textContent = 'MobSF: Connected ✓';
+                statusDiv.textContent = 'MobSF Connected';
                 statusDiv.className = 'mobsf-status mobsf-connected';
               } else {
-                statusDiv.textContent = 'MobSF: Disconnected ✗';
+                statusDiv.textContent = 'MobSF Disconnected';
                 statusDiv.className = 'mobsf-status mobsf-disconnected';
               }
             })
             .catch(error => {
               const statusDiv = document.getElementById('mobsf-status');
-              statusDiv.textContent = 'MobSF: Error';
+              statusDiv.textContent = 'MobSF Error';
               statusDiv.className = 'mobsf-status mobsf-disconnected';
             });
 
@@ -1035,6 +1951,38 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             });
           }
           
+          function filterAppsByType() {
+            const selectedType = document.getElementById('appTypeFilter').value;
+            const rows = document.querySelectorAll('table tbody tr');
+            
+            rows.forEach(row => {
+              const appType = row.getAttribute('data-app-type');
+              if (selectedType === 'all' || appType === selectedType) {
+                row.style.display = '';
+              } else {
+                row.style.display = 'none';
+              }
+            });
+          }
+
+          function clearTodayData() {
+            if (confirm('Are you sure you want to delete all data from today\\'s index? This action cannot be undone.')) {
+              fetch(getBasePath() + '/clear-today', { method: 'DELETE' })
+                .then(response => response.json())
+                .then(data => {
+                  if (data.error) {
+                    alert('Error: ' + data.error);
+                  } else {
+                    alert(data.message);
+                    location.reload();
+                  }
+                })
+                .catch(error => {
+                  alert('Error: ' + error.message);
+                });
+            }
+          }
+          
           function runMobsfAnalysis(sha256, packageName) {
             if (confirm('Run MobSF static analysis for "' + packageName + '"? This may take several minutes.')) {
               event.target.textContent = 'Analyzing...';
@@ -1047,9 +1995,8 @@ router.get("/apps", requireWebAuth, async (req, res) => {
                   if (data.error) {
                     alert('MobSF Analysis Error: ' + data.error);
                   } else {
-                    alert('MobSF analysis completed successfully!\\nSecurity Score: ' + 
-                          (data.analysis ? data.analysis.security_score + '/100' : 'N/A') + 
-                          '\\nStatus: ' + data.app.status);
+                    alert('MobSF Static Analysis completed successfully!\\nSecurity Score: ' + 
+                          (data.analysis ? data.analysis.security_score + '/100' : 'N/A'));
                     location.reload();
                   }
                 })
@@ -1099,6 +2046,11 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             window.location.href = url;
           }
           
+          function viewVirusTotalResults(sha256, packageName) {
+            const selectedDate = document.getElementById('date-picker').value;
+            window.location.href = getBasePath() + '/virustotal-results/' + sha256 + (selectedDate ? '?date=' + selectedDate : '');
+          }
+          
           function uploadToSandbox(sha256, packageName) {
             if (confirm('Upload "' + packageName + '" to sandbox for dynamic analysis?')) {
               fetch(getBasePath() + '/apps/' + sha256 + '/upload-sandbox', { method: 'POST' })
@@ -1133,6 +2085,71 @@ router.get("/apps", requireWebAuth, async (req, res) => {
                 });
             }
           }
+
+          // SOC Analyst Remarks Modal Functions
+          let currentAppSha256 = '';
+          let currentAppPackage = '';
+
+          function openRemarksModal(sha256, packageName, appName) {
+            currentAppSha256 = sha256;
+            currentAppPackage = packageName;
+            document.getElementById('modal-app-name').value = appName + ' (' + packageName + ')';
+            document.getElementById('modal-status').value = '';
+            document.getElementById('modal-remarks').value = '';
+            document.getElementById('remarksModal').classList.add('active');
+          }
+
+          function closeRemarksModal() {
+            document.getElementById('remarksModal').classList.remove('active');
+            currentAppSha256 = '';
+            currentAppPackage = '';
+          }
+
+          function submitRemarks() {
+            const status = document.getElementById('modal-status').value;
+            const remarks = document.getElementById('modal-remarks').value.trim();
+
+            if (!remarks) {
+              alert('Please enter remarks before submitting.');
+              return;
+            }
+
+            const payload = {
+              socRemarks: remarks,
+              remarksTimestamp: new Date().toISOString()
+            };
+
+            if (status) {
+              payload.status = status;
+            }
+
+            fetch(getBasePath() + '/update-remarks/' + currentAppSha256, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            })
+            .then(response => response.json())
+            .then(data => {
+              if (data.error) {
+                alert('Error: ' + data.error);
+              } else {
+                alert('SOC Analyst remarks submitted successfully!' + 
+                      (status ? '\\nStatus updated to: ' + status : ''));
+                closeRemarksModal();
+                location.reload();
+              }
+            })
+            .catch(error => {
+              alert('Error: ' + error.message);
+            });
+          }
+
+          // Close modal when clicking outside
+          document.getElementById('remarksModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+              closeRemarksModal();
+            }
+          });
         </script>
       </body>
       </html>
@@ -1180,7 +2197,7 @@ router.post("/apps/:sha256/upload-sandbox", requireWebAuth, async (req, res) => 
       id: docId,
       body: {
         doc: {
-          status: "sandbox_submitted",
+          sandboxStatus: "sandbox_submitted",
           uploadedByUser: true,
           timestamp: new Date(),
         },
@@ -1192,6 +2209,53 @@ router.post("/apps/:sha256/upload-sandbox", requireWebAuth, async (req, res) => 
   } catch (err) {
     console.error(`Failed to submit app ${sha256} to sandbox:`, err.message);
     res.status(500).send("Failed to submit to sandbox");
+  }
+});
+
+// POST /update-remarks/:sha256 - Update SOC Analyst remarks - REQUIRES WEB AUTH
+router.post("/update-remarks/:sha256", requireWebAuth, async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const { sha256 } = req.params;
+  const { socRemarks, status, remarksTimestamp } = req.body;
+
+  try {
+    const dynamicIndex = getDynamicIndexName();
+    const searchRes = await esClient.search({
+      index: dynamicIndex,
+      body: {
+        query: { term: { sha256: sha256 } },
+      },
+    });
+
+    if (!searchRes.hits.hits.length) {
+      return res.status(404).json({ error: "App not found" });
+    }
+
+    const docId = searchRes.hits.hits[0]._id;
+
+    const updateBody = {
+      socRemarks: socRemarks,
+      remarksTimestamp: remarksTimestamp,
+      remarksBy: req.session.username || 'Unknown Analyst'
+    };
+
+    if (status) {
+      updateBody.status = status;
+    }
+
+    await esClient.update({
+      index: dynamicIndex,
+      id: docId,
+      body: {
+        doc: updateBody,
+      },
+    });
+
+    console.log(`✅ SOC remarks added for ${sha256} by ${req.session.username}`);
+    res.json({ success: true, message: "Remarks updated successfully" });
+  } catch (err) {
+    console.error(`Failed to update remarks for ${sha256}:`, err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1230,6 +2294,37 @@ router.get("/download/:fileName", requireWebAuth, downloadApp);
 
 // DELETE /delete/:sha256 - Delete app and APK file - REQUIRES WEB AUTH
 router.delete("/delete/:sha256", requireWebAuth, deleteApp);
+
+// DELETE /clear-today - Clear all data from today's index - REQUIRES WEB AUTH
+router.delete("/clear-today", requireWebAuth, async (req, res) => {
+  const esClient = req.app.get("esClient");
+  
+  try {
+    const dynamicIndex = getDynamicIndexName();
+    console.log(`🗑️ Clearing all data from index: ${dynamicIndex}`);
+    
+    // Delete all documents from today's index
+    const deleteResult = await esClient.deleteByQuery({
+      index: dynamicIndex,
+      body: {
+        query: {
+          match_all: {}
+        }
+      },
+      refresh: true
+    });
+    
+    console.log(`✅ Deleted ${deleteResult.deleted} documents from ${dynamicIndex}`);
+    res.json({ 
+      success: true, 
+      message: `Successfully deleted ${deleteResult.deleted} apps from today's index`,
+      deleted: deleteResult.deleted
+    });
+  } catch (err) {
+    console.error("Failed to clear today's data:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // POST /scan - Original scan endpoint (backward compatibility) - NO AUTH REQUIRED
 router.post("/scan", receiveAppData);

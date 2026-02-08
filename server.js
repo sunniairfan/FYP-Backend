@@ -353,192 +353,316 @@ app.get("/", requireAuth, (req, res) => {
     <html>
     <head>
       <title>Android Malware Detection System</title>
+      <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
       <style>
-        body {
-          background: linear-gradient(135deg, #0a0f1c 0%, #1a1f3a 50%, #0d1421 100%);
-          color: #60a5fa;
-          font-family: 'Courier New', monospace;
-          text-align: center;
-          padding: 50px;
-          min-height: 100vh;
+        * {
           margin: 0;
+          padding: 0;
+          box-sizing: border-box;
         }
-        .main-container {
-          max-width: 1200px;
-          margin: 0 auto;
+        body {
+          background: #0a192f;
+          color: #94a3b8;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+          min-height: 100vh;
+          display: flex;
         }
-        .cyber-header {
-          margin-bottom: 40px;
+        .sidebar {
+          width: 200px;
+          background: #112240;
+          height: 100vh;
+          padding: 20px 0;
+          display: flex;
+          flex-direction: column;
+          position: fixed;
+          left: -200px;
+          top: 0;
+          transition: left 0.3s ease;
+          z-index: 1000;
+          box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);
         }
-        .main-title {
-          font-size: 3.5em;
-          margin-bottom: 10px;
-          color: #60a5fa;
-          text-shadow: 0 0 30px rgba(96, 165, 250, 0.5);
-          letter-spacing: 2px;
+        .sidebar.open {
+          left: 0;
         }
-        .subtitle {
-          font-size: 1.3em;
+        .logo {
+          padding: 0 18px 25px;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          color: white;
+          font-weight: 600;
+          font-size: 17px;
+          border-bottom: 1px solid #1d3557;
           margin-bottom: 20px;
-          color: #94a3b8;
-          font-weight: 300;
         }
-        .status-badge {
-          display: inline-block;
-          background: linear-gradient(45deg, #059669, #10b981);
-          color: white;
-          padding: 10px 20px;
-          border-radius: 25px;
-          font-weight: bold;
-          margin: 20px 0;
-          box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
-        }
-        .user-info {
-          position: absolute;
-          top: 20px;
-          right: 20px;
-          color: #94a3b8;
-          font-size: 0.9em;
-        }
-        .logout-btn {
-          background: linear-gradient(45deg, #dc2626, #ef4444);
-          color: white;
-          text-decoration: none;
-          padding: 8px 16px;
-          border-radius: 5px;
-          margin-left: 15px;
-          font-size: 0.8em;
-          transition: all 0.3s ease;
-        }
-        .logout-btn:hover {
-          background: linear-gradient(45deg, #b91c1c, #dc2626);
-          transform: translateY(-1px);
-        }
-        .button-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-          gap: 30px;
-          margin-top: 40px;
-          max-width: 800px;
-          margin-left: auto;
-          margin-right: auto;
-        }
-        .cyber-button {
-          background: linear-gradient(45deg, #1e40af, #3b82f6);
-          color: white;
-          text-decoration: none;
-          padding: 25px 35px;
-          border-radius: 12px;
-          font-weight: bold;
-          font-size: 1.1em;
-          transition: all 0.3s ease;
-          box-shadow: 0 8px 25px rgba(59, 130, 246, 0.3);
-          border: 2px solid transparent;
+        .logo-icon {
+          width: 32px;
+          height: 32px;
+          background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+          border-radius: 8px;
           display: flex;
           align-items: center;
           justify-content: center;
-          gap: 15px;
+          font-size: 16px;
+          color: white;
         }
-        .cyber-button:hover {
-          background: linear-gradient(45deg, #2563eb, #60a5fa);
-          transform: translateY(-5px);
-          box-shadow: 0 15px 35px rgba(96, 165, 250, 0.4);
-          border-color: #60a5fa;
+        .nav-item {
+          padding: 12px 18px;
+          color: #94a3b8;
+          text-decoration: none;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          transition: all 0.2s;
+          font-size: 14px;
+          cursor: pointer;
         }
-        .cyber-button.upload {
-          background: linear-gradient(45deg, #059669, #10b981);
+        .nav-item:hover {
+          background: #1d3557;
+          color: white;
         }
-        .cyber-button.upload:hover {
-          background: linear-gradient(45deg, #047857, #059669);
-          box-shadow: 0 15px 35px rgba(16, 185, 129, 0.4);
-          border-color: #10b981;
+        .nav-item.active {
+          background: #000000;
+          color: white;
+          border-left: 3px solid #2563eb;
         }
-        .button-icon {
-          font-size: 1.5em;
+        .nav-icon {
+          width: 20px;
+          text-align: center;
+          font-size: 16px;
         }
-        .button-text {
+        .logout-nav {
+          margin-top: auto;
+          padding: 12px 18px;
+          color: #ef4444;
+          text-decoration: none;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          transition: all 0.2s;
+          font-size: 14px;
+          border-top: 1px solid #1d3557;
+        }
+        .logout-nav:hover {
+          background: #7f1d1d;
+          color: white;
+        }
+        .main-content {
+          flex: 1;
+          padding: 0;
+          transition: margin-left 0.3s ease;
+        }
+        .sidebar.open ~ .main-content {
+          margin-left: 200px;
+        }
+        .overlay {
+          display: none;
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background: rgba(0, 0, 0, 0.5);
+          z-index: 999;
+        }
+        .overlay.show {
+          display: block;
+        }
+        .top-bar {
+          background: #112240;
+          padding: 8px 20px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          border-bottom: 1px solid #1d3557;
+        }
+        .menu-toggle {
+          background: transparent;
+          border: none;
+          color: #94a3b8;
+          font-size: 18px;
+          cursor: pointer;
+          padding: 4px 6px;
+          display: flex;
+          align-items: center;
+          transition: color 0.2s;
+        }
+        .menu-toggle:hover {
+          color: white;
+        }
+        .user-info {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          color: #e2e8f0;
+          font-size: 14px;
+          font-weight: 500;
+        }
+        .user-avatar {
+          width: 32px;
+          height: 32px;
+          background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: white;
+          font-weight: 600;
+          font-size: 14px;
+        }
+        .content-area {
+          padding: 60px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          min-height: calc(100vh - 49px);
+        }
+        .hero-section {
+          text-align: center;
+          max-width: 900px;
+        }
+        .main-title {
+          font-size: 2.2em;
+          color: white;
+          font-weight: 700;
+          letter-spacing: 0.5px;
+          margin-bottom: 18px;
+          line-height: 1.2;
+        }
+        .subtitle {
+          font-size: 1.1em;
+          color: #64748b;
+          margin-bottom: 60px;
+          font-weight: 400;
+        }
+        .button-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 24px;
+          width: 100%;
+          max-width: 700px;
+          margin: 0 auto;
+        }
+        .action-card {
+          background: #112240;
+          border: 1px solid #1d3557;
+          border-radius: 12px;
+          padding: 35px;
+          text-decoration: none;
           display: flex;
           flex-direction: column;
           align-items: flex-start;
+          gap: 14px;
+          transition: all 0.3s;
+          cursor: pointer;
         }
-        .button-title {
-          font-size: 1.1em;
-          margin-bottom: 5px;
+        .action-card:hover {
+          border-color: #2563eb;
+          transform: translateY(-3px);
+          box-shadow: 0 12px 28px rgba(37, 99, 235, 0.3);
+          background: #1d3557;
         }
-        .button-desc {
-          font-size: 0.8em;
-          color: rgba(255, 255, 255, 0.8);
-          font-weight: normal;
-        }
-        .shield-animation {
-          font-size: 4em;
-          margin-bottom: 20px;
-          animation: pulse 2s infinite;
-          color: #3b82f6;
-        }
-        @keyframes pulse {
-          0% { transform: scale(1); }
-          50% { transform: scale(1.1); }
-          100% { transform: scale(1); }
-        }
-        .security-stats {
-          display: flex;
-          justify-content: center;
-          gap: 40px;
-          margin: 40px 0;
-          flex-wrap: wrap;
-        }
-        .stat-card {
-          background: rgba(26, 31, 58, 0.6);
-          border: 1px solid #3b82f6;
+        .card-icon {
+          width: 48px;
+          height: 48px;
+          background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
           border-radius: 10px;
-          padding: 20px;
-          min-width: 120px;
-          backdrop-filter: blur(10px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 20px;
+          color: white;
         }
-        .stat-number {
-          font-size: 2em;
-          color: #60a5fa;
-          font-weight: bold;
+        .card-title {
+          font-size: 1.15em;
+          color: white;
+          font-weight: 600;
+          margin-top: 4px;
         }
-        .stat-label {
-          color: #94a3b8;
+        .card-desc {
           font-size: 0.9em;
-          margin-top: 5px;
+          color: #64748b;
+          line-height: 1.5;
         }
       </style>
     </head>
     <body>
-      <div class="user-info">
-        👤 Welcome, ${req.session.username}
-        <a href="/logout" class="logout-btn">🚪 Logout</a>
+      <div class="sidebar" id="sidebar">
+        <div class="logo">
+          <div class="logo-icon"><i class="fas fa-shield-alt"></i></div>
+          <span>CYBER WOLF</span>
+        </div>
+        <a href="/" class="nav-item active">
+          <i class="fas fa-home nav-icon"></i>
+          <span>Home</span>
+        </a>
+        <a href="/dashboard" class="nav-item">
+          <i class="fas fa-chart-line nav-icon"></i>
+          <span>Dashboard</span>
+        </a>
+        <a href="/uploadapp/apps" class="nav-item">
+          <i class="fas fa-mobile-alt nav-icon"></i>
+          <span>App Manager</span>
+        </a>
+        <a href="#" class="nav-item">
+          <i class="fas fa-cog nav-icon"></i>
+          <span>Settings</span>
+        </a>
+        <a href="/logout" class="logout-nav">
+          <i class="fas fa-sign-out-alt nav-icon"></i>
+          <span>Logout</span>
+        </a>
       </div>
       
-      <div class="main-container">
-        <div class="cyber-header">
-          <div class="shield-animation">🛡️</div>
-          <h1 class="main-title">ANDROID MALWARE DETECTION SYSTEM</h1>
-          <p class="subtitle">Advanced Security Analysis Platform</p>
+      <div class="overlay" id="overlay"></div>
+      
+      <div class="main-content">
+        <div class="top-bar">
+          <button class="menu-toggle" id="menuToggle"><i class="fas fa-bars"></i></button>
+          <div class="user-info">
+            <span>Welcome, ${req.session.username}</span>
+            <div class="user-avatar">${req.session.username.charAt(0).toUpperCase()}</div>
+          </div>
         </div>
-
-        <div class="button-grid">
-          <a href="/dashboard" class="cyber-button">
-            <span class="button-icon">📊</span>
-            <div class="button-text">
-              <div class="button-title">Security Dashboard</div>
-              <div class="button-desc">Real-time threat analysis & monitoring</div>
+        
+        <div class="content-area">
+          <div class="hero-section">
+            <h1 class="main-title">ANDROID MALWARE DETECTION SYSTEM</h1>
+            <p class="subtitle">Advanced Security Analysis Platform</p>
+            
+            <div class="button-grid">
+              <a href="/dashboard" class="action-card">
+                <div class="card-icon"><i class="fas fa-chart-line"></i></div>
+                <div class="card-title">Security Dashboard</div>
+                <div class="card-desc">Real-time threat analysis & monitoring</div>
+              </a>
+              
+              <a href="/uploadapp/apps" class="action-card">
+                <div class="card-icon"><i class="fas fa-mobile-alt"></i></div>
+                <div class="card-title">App Manager</div>
+                <div class="card-desc">Upload & analyze APK files</div>
+              </a>
             </div>
-          </a>
-          
-          <a href="/uploadapp/apps" class="cyber-button upload">
-            <span class="button-icon">📱</span>
-            <div class="button-text">
-              <div class="button-title">App Manager</div>
-              <div class="button-desc">Upload & analyze APK files</div>
-            </div>
-          </a>
+          </div>
         </div>
       </div>
+      
+      <script>
+        const menuToggle = document.getElementById('menuToggle');
+        const sidebar = document.getElementById('sidebar');
+        const overlay = document.getElementById('overlay');
+        
+        menuToggle.addEventListener('click', () => {
+          sidebar.classList.toggle('open');
+          overlay.classList.toggle('show');
+        });
+        
+        overlay.addEventListener('click', () => {
+          sidebar.classList.remove('open');
+          overlay.classList.remove('show');
+        });
+      </script>
     </body>
     </html>
   `);

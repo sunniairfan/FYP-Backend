@@ -68,7 +68,7 @@ const checkVirusTotal = async (sha256) => {
     if (err.response?.status === 404) {
       console.log(`File ${sha256} not found in VirusTotal database`);
       return {
-        status: "not_found",
+        status: "unknown",
         scanTime: new Date().toISOString(),
         detectionRatio: "0/0",
         totalEngines: 0,
