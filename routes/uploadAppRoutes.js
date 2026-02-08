@@ -1805,6 +1805,17 @@ router.get("/apps", requireWebAuth, async (req, res) => {
                   Malicious: ${app.virusTotalAnalysis.maliciousCount} | Suspicious: ${app.virusTotalAnalysis.suspiciousCount}
                 </div>
               ` : ""}
+              ${app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe' ? `
+                <div class="ml-info" style="margin-top: 8px; padding: 6px; background: rgba(99, 102, 241, 0.1); border-radius: 4px; border-left: 3px solid #6366f1;">
+                  <span class="security-score" style="background: rgba(99, 102, 241, 0.2); color: #6366f1; margin: 0;">
+                    🤖 ML Model Analysis
+                  </span>
+                  <div class="ml-info" style="font-size: 11px; color: #6366f1; margin-top: 2px;">
+                    Prediction: ${app.mlPredictionLabel} | Score: ${(app.mlPredictionScore * 100).toFixed(1)}%
+                  </div>
+                  ${app.mlAnalysisTimestamp ? `<div class="ml-info" style="font-size: 10px; color: #64748b;">Analysis: ${new Date(app.mlAnalysisTimestamp).toLocaleDateString()}</div>` : ""}
+                </div>
+              ` : ""}
             </td>
             <td class="actions">
               <div class="btn-group">

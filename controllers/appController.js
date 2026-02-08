@@ -677,12 +677,88 @@ const deleteApp = async (req, res) => {
   }
 };
 
+// Store ML Prediction Results
+const storeMLPrediction = async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const ensureIndexExists = req.app.get("ensureIndexExists") || (async () => {});
+
+  try {
+    const { packageName, mlPredictionScore, mlPredictionLabel, confidence, timestamp } = req.body;
+
+    if (!packageName || mlPredictionScore === undefined || !mlPredictionLabel) {
+      return res.status(400).json({
+        error: "Missing required fields: packageName, mlPredictionScore, mlPredictionLabel"
+      });
+    }
+
+    await ensureIndexExists(esClient);
+
+    // Search for the app by packageName in the current date's index
+    const indexName = getIndexName();
+    const searchResult = await esClient.search({
+      index: indexName,
+      query: { term: { packageName: { value: packageName } } },
+      size: 1,
+    });
+
+    if (searchResult.hits.hits.length === 0) {
+      console.warn(`🤖 ML Prediction: App not found for ${packageName}`);
+      return res.status(404).json({
+        error: "App not found in database",
+        packageName
+      });
+    }
+
+    const doc = searchResult.hits.hits[0];
+    const docId = doc._id;
+
+    // Prepare ML prediction data (stored separately, does NOT update overall status)
+    const mlPredictionData = {
+      mlPredictionScore: parseFloat(mlPredictionScore),
+      mlPredictionLabel: mlPredictionLabel, // "safe", "risky", "malware"
+      mlAnalysisTimestamp: new Date().toISOString()
+    };
+
+    // Update the document with ML prediction data ONLY (status remains unchanged)
+    await esClient.update({
+      index: indexName,
+      id: docId,
+      body: {
+        doc: {
+          ...mlPredictionData,
+          mlAnalysisDate: new Date()
+        },
+      },
+    });
+
+    console.log(`🤖 ML Prediction stored for ${packageName} (Status NOT updated - kept as: ${doc._source.status})`);
+    console.log(`   Score: ${mlPredictionScore}, Label: ${mlPredictionLabel}`);
+
+    res.status(200).json({
+      message: "ML Prediction stored successfully (status unchanged)",
+      packageName,
+      mlPredictionScore,
+      mlPredictionLabel,
+      currentStatus: doc._source.status,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (err) {
+    console.error("Error storing ML prediction:", err.message);
+    res.status(500).json({
+      error: "Failed to store ML prediction",
+      details: err.message
+    });
+  }
+};
+
 module.exports = {
   receiveAppData,
   uploadApp,
   getAppDetails,
   downloadApp,
   deleteApp,
+  storeMLPrediction,
   separateDangerousPermissions,
   isHashMalicious,
 };

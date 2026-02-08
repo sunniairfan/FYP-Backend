@@ -53,6 +53,13 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
       // Extract VirusTotal analysis data
       const virusTotalData = app.virusTotalHashCheck || app.virusTotalAnalysis || {};
       
+      // Extract ML Prediction data
+      const mlPredictionData = {
+        mlPredictionScore: app.mlPredictionScore || null,
+        mlPredictionLabel: app.mlPredictionLabel || null,
+        mlAnalysisTimestamp: app.mlAnalysisTimestamp || null
+      };
+      
       const mappedApp = {
         ...app,
         _id: hit._id,
@@ -62,6 +69,10 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
         totalEngines: virusTotalData.totalEngines || 'N/A',
         detectedEngines: virusTotalData.detectedEngines || 'N/A',
         scanTime: virusTotalData.scanTime || app.scanTime || null,
+        // Map ML Prediction data
+        mlPredictionScore: mlPredictionData.mlPredictionScore,
+        mlPredictionLabel: mlPredictionData.mlPredictionLabel,
+        mlAnalysisTimestamp: mlPredictionData.mlAnalysisTimestamp,
         // Ensure status is never "NOT FOUND" or "not_found" - convert to "unknown"
         status: (app.status === 'NOT FOUND' || app.status === 'not_found') ? 'unknown' : (app.status || 'unknown'),
         // Default to 'system' if appType is not defined (for backward compatibility)
@@ -950,6 +961,11 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
                             <div>
                                 <span class="status-badge status-${app.uploadedByUser ? 'uploaded' : (app.status?.toLowerCase() || 'unknown')}">${app.uploadedByUser ? 'Uploaded' : (app.status || 'Unknown')}</span>
                                 <div class="app-meta" style="margin-top: 5px;">Score: ${app.mobsfAnalysis?.security_score || app.virusTotalHashCheck?.detectionRatio || app.virusTotalAnalysis?.detectionRatio || 'N/A'}</div>
+                                ${app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe' ? `
+                                  <div class="app-meta" style="margin-top: 5px; padding: 5px; background: rgba(99, 102, 241, 0.1); border-radius: 3px; color: #6366f1; font-size: 12px; font-weight: 500;">
+                                    🤖 ML Model: ${app.mlPredictionLabel} (${(app.mlPredictionScore * 100).toFixed(0)}%)
+                                  </div>
+                                ` : ""}
                             </div>
                             <div class="actions">
                                 <button class="view-btn" onclick='showDetails(${JSON.stringify(app).replace(/'/g, "\\'")})'>View Details</button>
@@ -975,6 +991,11 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
                             <div>
                                 <span class="status-badge status-${app.uploadedByUser ? 'uploaded' : (app.status?.toLowerCase() || 'unknown')}">${app.uploadedByUser ? 'Uploaded' : (app.status || 'Unknown')}</span>
                                 <div class="app-meta" style="margin-top: 5px;">Score: ${app.mobsfAnalysis?.security_score || app.virusTotalHashCheck?.detectionRatio || app.virusTotalAnalysis?.detectionRatio || 'N/A'}</div>
+                                ${app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe' ? `
+                                  <div class="app-meta" style="margin-top: 5px; padding: 5px; background: rgba(99, 102, 241, 0.1); border-radius: 3px; color: #6366f1; font-size: 12px; font-weight: 500;">
+                                    🤖 ML Model: ${app.mlPredictionLabel} (${(app.mlPredictionScore * 100).toFixed(0)}%)
+                                  </div>
+                                ` : ""}
                             </div>
                             <div class="actions">
                                 <button class="view-btn" onclick='showDetails(${JSON.stringify(app).replace(/'/g, "\\'")})'>View Details</button>
@@ -1117,6 +1138,17 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
                 html += '<div class="detail-row"><div class="detail-label">Detected Engines:</div><div class="detail-value">' + (vtData.detectedEngines || app.detectedEngines || '0') + '</div></div>';
                 html += '<div class="detail-row"><div class="detail-label">Total Engines:</div><div class="detail-value">' + (vtData.totalEngines || app.totalEngines || '0') + '</div></div>';
                 html += '<div class="detail-row"><div class="detail-label">Scan Time:</div><div class="detail-value">' + (vtData.scanTime ? new Date(vtData.scanTime).toLocaleString() : 'N/A') + '</div></div>';
+            }
+            
+            // ML Prediction Analysis (only shown for non-safe apps)
+            if (app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe') {
+                html += '<h3 style="color: #6366f1; border-bottom: 1px solid #4f46e5; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">🤖 Machine Learning Model Analysis</h3>';
+                html += '<div class="detail-row"><div class="detail-label">Prediction Label:</div><div class="detail-value"><strong style="color: #6366f1; font-size: 16px;">' + (app.mlPredictionLabel || 'N/A') + '</strong></div></div>';
+                html += '<div class="detail-row"><div class="detail-label">ML Score:</div><div class="detail-value"><strong style="color: #6366f1; font-size: 18px;">' + (app.mlPredictionScore * 100).toFixed(1) + '%</strong></div></div>';
+                if (app.mlAnalysisTimestamp) {
+                    html += '<div class="detail-row"><div class="detail-label">Analysis Time:</div><div class="detail-value">' + new Date(app.mlAnalysisTimestamp).toLocaleString() + '</div></div>';
+                }
+                html += '<div class="detail-row" style="padding-top: 12px; border-top: 1px solid #4f46e5; margin-top: 12px;"><div class="detail-label">Status:</div><div class="detail-value" style="color: #94a3b8; font-size: 12px;">ML prediction is shown separately for reference. The app status is determined by VirusTotal analysis.</div></div>';
             }
             
             // MobSF Analysis
