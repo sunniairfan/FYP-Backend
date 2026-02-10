@@ -963,7 +963,7 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
                                 <div class="app-meta" style="margin-top: 5px;">Score: ${app.mobsfAnalysis?.security_score || app.virusTotalHashCheck?.detectionRatio || app.virusTotalAnalysis?.detectionRatio || 'N/A'}</div>
                                 ${app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe' ? `
                                   <div class="app-meta" style="margin-top: 5px; padding: 5px; background: rgba(99, 102, 241, 0.1); border-radius: 3px; color: #6366f1; font-size: 12px; font-weight: 500;">
-                                    🤖 ML Model: ${app.mlPredictionLabel} (${(app.mlPredictionScore * 100).toFixed(0)}%)
+                                    🤖 ML Model: ${app.mlPredictionLabel} (${(app.mlPredictionScore ?? 0).toFixed(3)})
                                   </div>
                                 ` : ""}
                             </div>
@@ -993,7 +993,7 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
                                 <div class="app-meta" style="margin-top: 5px;">Score: ${app.mobsfAnalysis?.security_score || app.virusTotalHashCheck?.detectionRatio || app.virusTotalAnalysis?.detectionRatio || 'N/A'}</div>
                                 ${app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe' ? `
                                   <div class="app-meta" style="margin-top: 5px; padding: 5px; background: rgba(99, 102, 241, 0.1); border-radius: 3px; color: #6366f1; font-size: 12px; font-weight: 500;">
-                                    🤖 ML Model: ${app.mlPredictionLabel} (${(app.mlPredictionScore * 100).toFixed(0)}%)
+                                    🤖 ML Model: ${app.mlPredictionLabel} (${(app.mlPredictionScore ?? 0).toFixed(3)})
                                   </div>
                                 ` : ""}
                             </div>
@@ -1144,7 +1144,7 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
             if (app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe') {
                 html += '<h3 style="color: #6366f1; border-bottom: 1px solid #4f46e5; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">🤖 Machine Learning Model Analysis</h3>';
                 html += '<div class="detail-row"><div class="detail-label">Prediction Label:</div><div class="detail-value"><strong style="color: #6366f1; font-size: 16px;">' + (app.mlPredictionLabel || 'N/A') + '</strong></div></div>';
-                html += '<div class="detail-row"><div class="detail-label">ML Score:</div><div class="detail-value"><strong style="color: #6366f1; font-size: 18px;">' + (app.mlPredictionScore * 100).toFixed(1) + '%</strong></div></div>';
+                html += '<div class="detail-row"><div class="detail-label">ML Score:</div><div class="detail-value"><strong style="color: #6366f1; font-size: 18px;">' + (app.mlPredictionScore ?? 0).toFixed(3) + '</strong></div></div>';
                 if (app.mlAnalysisTimestamp) {
                     html += '<div class="detail-row"><div class="detail-label">Analysis Time:</div><div class="detail-value">' + new Date(app.mlAnalysisTimestamp).toLocaleString() + '</div></div>';
                 }

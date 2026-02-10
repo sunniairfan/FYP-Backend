@@ -3,7 +3,7 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const mobsf = require("../utils/mobsf");
-const { analyzeFileWithVirusTotal } = require("../utils/virusTotal");
+const { analyzeFileWithVirusTotal, checkVirusTotal } = require("../utils/virusTotal");
 const router = express.Router();
 
 // Middleware to require authentication for web routes
@@ -844,6 +844,372 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
   }
 });
 
+// GET /results/:sha256 - Comprehensive analysis results page - REQUIRES WEB AUTH
+router.get("/results/:sha256", requireWebAuth, async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const sha256 = req.params.sha256;
+  
+  try {
+    const selectedDate = req.query.date || new Date().toISOString().split("T")[0];
+    const indexName = getIndexNameForDate(selectedDate);
+    
+    const searchRes = await esClient.search({
+      index: indexName,
+      size: 1,
+      query: { term: { sha256: { value: sha256 } } },
+    });
+
+    if (searchRes.hits.hits.length === 0) {
+      return res.status(404).send(`
+        <html>
+        <head>
+          <title>App Not Found</title>
+          <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { background: linear-gradient(135deg, #0a192f 0%, #1b3a52 100%); color: white; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+            .error-box { background: #112240; border: 1px solid #1d3557; border-radius: 10px; padding: 40px; max-width: 500px; text-align: center; }
+            h1 { color: #ef4444; margin-bottom: 10px; }
+            p { color: #94a3b8; margin-bottom: 20px; }
+            a { color: #2563eb; text-decoration: none; font-weight: 500; }
+            a:hover { text-decoration: underline; }
+          </style>
+        </head>
+        <body>
+          <div class="error-box">
+            <h1>❌ App Not Found</h1>
+            <p>The requested app was not found in the database.</p>
+            <a href="/uploadapp/apps">← Back to Apps</a>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+
+    const app = searchRes.hits.hits[0]._source;
+
+    // Fetch VT hash check if not already in database
+    if (!app.virusTotalHashCheck && app.sha256) {
+      console.log(`[Results:${sha256}] Fetching VT hash check...`);
+      try {
+        const vtResult = await checkVirusTotal(app.sha256);
+        if (vtResult) {
+          app.virusTotalHashCheck = {
+            detectionRatio: vtResult.detectionRatio,
+            totalEngines: vtResult.totalEngines,
+            detectedEngines: vtResult.detectedEngines,
+            scanTime: vtResult.scanTime
+          };
+          
+          // Update database with VT hash check
+          try {
+            await esClient.update({
+              index: indexName,
+              id: searchRes.hits.hits[0]._id,
+              body: {
+                doc: {
+                  virusTotalHashCheck: app.virusTotalHashCheck,
+                  status: vtResult.status,
+                  source: "VirusTotal"
+                }
+              }
+            });
+            console.log(`✅ Updated VT hash check for: ${app.packageName}`);
+          } catch (updateErr) {
+            console.log(`⚠️ Could not update VT hash in database: ${updateErr.message}`);
+          }
+        }
+      } catch (vtErr) {
+        console.log(`ℹ️ Could not fetch VT hash: ${vtErr.message}`);
+      }
+    }
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Analysis Results - ${app.appName || 'App'}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #0a192f 0%, #1b3a52 100%);
+      color: #cbd5e1;
+      min-height: 100vh;
+      padding: 30px 20px;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .back-btn { 
+      display: inline-block; 
+      margin-bottom: 25px;
+      padding: 10px 20px;
+      background: #1e293b;
+      color: #90e0ef;
+      text-decoration: none;
+      border-radius: 6px;
+      border: 1px solid #334155;
+      transition: all 0.3s;
+    }
+    .back-btn:hover { background: #334155; border-color: #90e0ef; }
+    
+    .header {
+      background: rgba(30, 41, 59, 0.8);
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 30px;
+      margin-bottom: 30px;
+      backdrop-filter: blur(10px);
+    }
+    .app-name { font-size: 32px; font-weight: 700; margin-bottom: 10px; color: #f1f5f9; }
+    .app-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-top: 20px; }
+    .meta-item { }
+    .meta-label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+    .meta-value { color: #e2e8f0; font-weight: 500; word-break: break-all; }
+    
+    .analysis-section {
+      background: rgba(30, 41, 59, 0.6);
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 25px;
+      margin-bottom: 20px;
+      backdrop-filter: blur(10px);
+    }
+    .section-title {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .section-title .icon { font-size: 20px; }
+    
+    .analysis-section.ml { border-left: 4px solid #6366f1; }
+    .analysis-section.ml .section-title { color: #6366f1; }
+    
+    .analysis-section.mobsf { border-left: 4px solid #22c55e; }
+    .analysis-section.mobsf .section-title { color: #22c55e; }
+    
+    .analysis-section.vt-hash { border-left: 4px solid #3b82f6; }
+    .analysis-section.vt-hash .section-title { color: #3b82f6; }
+    
+    .analysis-section.vt-multi { border-left: 4px solid #a855f7; }
+    .analysis-section.vt-multi .section-title { color: #a855f7; }
+    
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 15px;
+      margin-bottom: 15px;
+    }
+    .metric {
+      background: rgba(10, 25, 47, 0.8);
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 15px;
+    }
+    .metric-label {
+      font-size: 11px;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 8px;
+    }
+    .metric-value {
+      font-size: 22px;
+      font-weight: 700;
+      color: #e2e8f0;
+    }
+    .no-data {
+      background: rgba(15, 23, 42, 0.5);
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 20px;
+      text-align: center;
+      color: #64748b;
+      font-style: italic;
+    }
+    .permission-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .permission-tag {
+      background: rgba(239, 68, 68, 0.2);
+      color: #fca5a5;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    .status-safe { color: #10b981; }
+    .status-risky { color: #f59e0b; }
+    .status-malware { color: #ef4444; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div style="display: flex; gap: 10px; margin-bottom: 25px;">
+      <a href="/" class="back-btn" style="background: #1e293b; border: 1px solid #334155; color: #90e0ef;">🏠 Home</a>
+      <a href="/uploadapp/apps" class="back-btn" style="background: #1e293b; border: 1px solid #334155; color: #90e0ef;">← Back to Apps</a>
+    </div>
+    
+    <div class="header">
+      <div class="app-name">${app.appName || 'Unknown App'}</div>
+      <div class="app-meta">
+        <div class="meta-item">
+          <div class="meta-label">Package Name</div>
+          <div class="meta-value">${app.packageName || 'N/A'}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Overall Status</div>
+          <div class="meta-value" style="color: ${app.status === 'safe' ? '#10b981' : app.status === 'suspicious' ? '#f59e0b' : '#ef4444'};">
+            ${(app.status || 'unknown').toUpperCase()}
+          </div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">File Size</div>
+          <div class="meta-value">${app.sizeMB?.toFixed(2) || 0} MB</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Source</div>
+          <div class="meta-value">${app.source || 'N/A'}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Uploaded</div>
+          <div class="meta-value">${app.timestamp ? new Date(app.timestamp).toLocaleDateString() : 'N/A'}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">SHA256</div>
+          <div class="meta-value" style="font-size: 11px; font-family: monospace;">${app.sha256?.substring(0, 20)}...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 1. ML MODEL PREDICTION -->
+    <div class="analysis-section ml">
+      <div class="section-title"><span class="icon">🤖</span> ML Model Prediction</div>
+      <div class="section-content">
+        ${app.mlPredictionScore !== undefined ? `
+          <div class="metrics-grid">
+            <div class="metric">
+              <div class="metric-label">Prediction</div>
+              <div class="metric-value status-${app.mlPredictionLabel === 'safe' ? 'safe' : app.mlPredictionLabel === 'risky' ? 'risky' : 'malware'}">
+                ${(app.mlPredictionLabel || 'unknown').toUpperCase()}
+              </div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Confidence Score</div>
+              <div class="metric-value status-${app.mlPredictionLabel === 'safe' ? 'safe' : app.mlPredictionLabel === 'risky' ? 'risky' : 'malware'}">
+                ${(app.mlPredictionScore ?? 0).toFixed(3)}
+              </div>
+            </div>
+            ${app.mlAnalysisTimestamp ? `
+              <div class="metric">
+                <div class="metric-label">Analysis Date</div>
+                <div class="metric-value">${new Date(app.mlAnalysisTimestamp).toLocaleDateString()}</div>
+              </div>
+            ` : ''}
+          </div>
+        ` : `
+          <div class="no-data">No ML analysis available yet. Contact administrator.</div>
+        `}
+      </div>
+    </div>
+
+    <!-- 2. STATIC ANALYSIS (MobSF) -->
+    <div class="analysis-section mobsf">
+      <div class="section-title"><span class="icon">🔍</span> Static Analysis (MobSF)</div>
+      <div class="section-content">
+        ${app.mobsfAnalysis ? `
+          <div class="metrics-grid">
+            <div class="metric">
+              <div class="metric-label">Security Score</div>
+              <div class="metric-value" style="color: ${app.mobsfAnalysis.security_score >= 70 ? '#10b981' : app.mobsfAnalysis.security_score >= 40 ? '#f59e0b' : '#ef4444'};">
+                ${app.mobsfAnalysis.security_score}/100
+              </div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Dangerous Permissions</div>
+              <div class="metric-value" style="color: #f59e0b;">${app.mobsfAnalysis.dangerous_permissions?.length || 0}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">High Risk Findings</div>
+              <div class="metric-value" style="color: #ef4444;">${app.mobsfAnalysis.high_risk_findings || 0}</div>
+            </div>
+            ${app.mobsfAnalysis.scan_type ? `
+              <div class="metric">
+                <div class="metric-label">Scan Type</div>
+                <div class="metric-value">${app.mobsfAnalysis.scan_type}</div>
+              </div>
+            ` : ''}
+          </div>
+          ${app.mobsfAnalysis.dangerous_permissions && app.mobsfAnalysis.dangerous_permissions.length > 0 ? `
+            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #1e293b;">
+              <div class="metric-label">Dangerous Permissions</div>
+              <div class="permission-list">
+                ${app.mobsfAnalysis.dangerous_permissions.map(p => `
+                  <span class="permission-tag">${p.replace('android.permission.', '')}</span>
+                `).join('')}
+              </div>
+            </div>
+          ` : ''}
+        ` : `
+          <div class="no-data">No static analysis available yet</div>
+        `}
+      </div>
+    </div>
+
+    <!-- 4. VirusTotal Multi-Engine Analysis -->
+    <div class="analysis-section vt-multi">
+      <div class="section-title"><span class="icon">⚙️</span> VirusTotal Multi-Engine Analysis</div>
+      <div class="section-content">
+        ${app.virusTotalAnalysis ? `
+          <div class="metrics-grid">
+            <div class="metric">
+              <div class="metric-label">VT Status</div>
+              <div class="metric-value" style="color: ${app.virusTotalAnalysis.status === 'malicious' ? '#ef4444' : app.virusTotalAnalysis.status === 'suspicious' ? '#f59e0b' : '#10b981'};">
+                ${(app.virusTotalAnalysis.status || 'unknown').toUpperCase()}
+              </div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Detection Ratio</div>
+              <div class="metric-value">${app.virusTotalAnalysis.detectionRatio || 'N/A'}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Malicious</div>
+              <div class="metric-value" style="color: #ef4444;">${app.virusTotalAnalysis.maliciousCount || 0}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Suspicious</div>
+              <div class="metric-value" style="color: #f59e0b;">${app.virusTotalAnalysis.suspiciousCount || 0}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Undetected</div>
+              <div class="metric-value" style="color: #10b981;">${app.virusTotalAnalysis.undetectedCount || 0}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Scan Date</div>
+              <div class="metric-value">${new Date(app.virusTotalAnalysis.scanTime || app.virusTotalAnalysis.analysisDate).toLocaleDateString()}</div>
+            </div>
+          </div>
+        ` : `
+          <div class="no-data">No multi-engine analysis available. Click "Analyze VirusTotal" to run analysis.</div>
+        `}
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+    `;
+
+    res.send(html);
+  } catch (err) {
+    console.error("Failed to load results:", err.message);
+    res.status(500).send(`<html><body style="background:#0d1b2a;color:white;text-align:center;padding:50px"><h1>❌ Error</h1><p>\${err.message}</p><a href="/uploadapp/apps" style="color:#90e0ef">← Back</a></body></html>`);
+  }
+});
+
 // GET /apps - View uploaded apps (HTML page with calendar) - REQUIRES WEB AUTH
 router.get("/apps", requireWebAuth, async (req, res) => {
   const esClient = req.app.get("esClient");
@@ -1358,7 +1724,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             white-space: nowrap;
           }
 
-          .btn-mobsf, .btn-report, .btn-view, .btn-sandbox, .btn-vt, .btn-download {
+          .btn-mobsf, .btn-report, .btn-view, .btn-sandbox, .btn-vt, .btn-download, .btn-analysis {
             background: #2563eb;
             color: white;
             flex: 0 0 auto;
@@ -1374,7 +1740,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             background: #047857;
           }
 
-          .btn-mobsf:hover, .btn-report:hover, .btn-view:hover, .btn-sandbox:hover, .btn-vt:hover, .btn-download:hover {
+          .btn-mobsf:hover, .btn-report:hover, .btn-view:hover, .btn-sandbox:hover, .btn-vt:hover, .btn-download:hover, .btn-analysis:hover {
             background: #1d4ed8;
           }
 
@@ -1811,7 +2177,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
                     🤖 ML Model Analysis
                   </span>
                   <div class="ml-info" style="font-size: 11px; color: #6366f1; margin-top: 2px;">
-                    Prediction: ${app.mlPredictionLabel} | Score: ${(app.mlPredictionScore * 100).toFixed(1)}%
+                    Prediction: ${app.mlPredictionLabel} | Score: ${(app.mlPredictionScore ?? 0).toFixed(3)}
                   </div>
                   ${app.mlAnalysisTimestamp ? `<div class="ml-info" style="font-size: 10px; color: #64748b;">Analysis: ${new Date(app.mlAnalysisTimestamp).toLocaleDateString()}</div>` : ""}
                 </div>
@@ -1844,6 +2210,9 @@ router.get("/apps", requireWebAuth, async (req, res) => {
                       View Results
                     </button>
                   ` : ""}
+                  <button class="btn-analysis" onclick="window.location.href = getBasePath() + '/results/${app.sha256}'" title="View All Analysis Results" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: 1px solid rgba(102, 126, 234, 0.5);">
+                    📊 Results
+                  </button>
                   <button class="btn-remarks" onclick="openRemarksModal('${app.sha256}', '${app.packageName}', '${app.appName || "Unknown App"}')" title="Add SOC Analyst Remarks">
                     SOC Remarks
                   </button>

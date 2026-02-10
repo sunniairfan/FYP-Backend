@@ -6,6 +6,7 @@ const { esClient } = require("./elasticsearch");
 const appRoutes = require("./routes/appRoutes");
 const uploadAppRoutes = require("./routes/uploadAppRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
+const resultsRoutes = require("./routes/resultsRoutes");
 
 dotenv.config();
 const app = express();
@@ -345,6 +346,7 @@ app.get("/logout", (req, res) => {
 app.use("/api/app", appRoutes); // Mobile API routes 
 app.use("/dashboard", requireAuth, dashboardRoutes); // Web dashboard routes
 app.use("/uploadapp", uploadAppRoutes); // Upload app routes 
+app.use("/results", requireAuth, resultsRoutes); // Analysis results page routes
 
 // Main dashboard page (requires login)
 app.get("/", requireAuth, (req, res) => {
@@ -538,10 +540,10 @@ app.get("/", requireAuth, (req, res) => {
         }
         .button-grid {
           display: grid;
-          grid-template-columns: 1fr 1fr;
+          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
           gap: 24px;
           width: 100%;
-          max-width: 700px;
+          max-width: 1000px;
           margin: 0 auto;
         }
         .action-card {
@@ -642,6 +644,12 @@ app.get("/", requireAuth, (req, res) => {
                 <div class="card-icon"><i class="fas fa-mobile-alt"></i></div>
                 <div class="card-title">App Manager</div>
                 <div class="card-desc">Upload & analyze APK files</div>
+              </a>
+              
+              <a href="/results" class="action-card">
+                <div class="card-icon"><i class="fas fa-file-alt"></i></div>
+                <div class="card-title">Analysis Results</div>
+                <div class="card-desc">View detailed app analysis & reports</div>
               </a>
             </div>
           </div>
