@@ -4,6 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const mobsf = require("../utils/mobsf");
 const { analyzeFileWithVirusTotal, checkVirusTotal } = require("../utils/virusTotal");
+const { calculateWeightedRiskScore } = require("../utils/riskAlgorithm");
 const router = express.Router();
 
 // Middleware to require authentication for web routes
@@ -479,7 +480,7 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
           <head>
             <title>App Not Found</title>
             <style>
-              body { background: #0d1b2a; color: white; font-family: Arial; text-align: center; padding: 50px; }
+              body { background: #0a192f; color: white; font-family: Arial; text-align: center; padding: 50px; }
               .error { background: #e63946; padding: 20px; border-radius: 10px; display: inline-block; }
               a { color: #90e0ef; text-decoration: none; }
             </style>
@@ -504,7 +505,7 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
           <head>
             <title>No VirusTotal Analysis</title>
             <style>
-              body { background: #0d1b2a; color: white; font-family: Arial; text-align: center; padding: 50px; }
+              body { background: #0a192f; color: white; font-family: Arial; text-align: center; padding: 50px; }
               .warning { background: #ffb703; color: #1b263b; padding: 20px; border-radius: 10px; display: inline-block; }
               a { color: #0077b6; text-decoration: none; font-weight: bold; }
             </style>
@@ -613,8 +614,8 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
             margin-top: 20px;
           }
           .stat-box {
-            background: #0a192f;
-            border: 1px solid #1d3557;
+            background: #112240;
+            border: 1px solid #2a2a2a;
             padding: 15px;
             border-radius: 6px;
             text-align: center;
@@ -673,7 +674,7 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
             margin-top: 20px;
           }
           .detections-table th {
-            background: linear-gradient(135deg, #415a77, #778da9);
+            background: #1d3557;
             padding: 15px;
             text-align: left;
             font-weight: bold;
@@ -827,7 +828,7 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
         <head>
           <title>Error</title>
           <style>
-            body { background: #0d1b2a; color: white; font-family: Arial; text-align: center; padding: 50px; }
+            body { background: #0a192f; color: white; font-family: Arial; text-align: center; padding: 50px; }
             .error { background: #e63946; padding: 20px; border-radius: 10px; display: inline-block; }
             a { color: #90e0ef; text-decoration: none; }
           </style>
@@ -866,8 +867,8 @@ router.get("/results/:sha256", requireWebAuth, async (req, res) => {
           <title>App Not Found</title>
           <style>
             * { margin: 0; padding: 0; box-sizing: border-box; }
-            body { background: linear-gradient(135deg, #0a192f 0%, #1b3a52 100%); color: white; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-            .error-box { background: #112240; border: 1px solid #1d3557; border-radius: 10px; padding: 40px; max-width: 500px; text-align: center; }
+          body { background: #0a192f; color: white; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+            .error-box { background: #112240; border: 1px solid #2a2a2a; border-radius: 10px; padding: 40px; max-width: 500px; text-align: center; }
             h1 { color: #ef4444; margin-bottom: 10px; }
             p { color: #94a3b8; margin-bottom: 20px; }
             a { color: #2563eb; text-decoration: none; font-weight: 500; }
@@ -932,10 +933,7 @@ router.get("/results/:sha256", requireWebAuth, async (req, res) => {
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { 
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: linear-gradient(135deg, #0a192f 0%, #1b3a52 100%);
-      color: #cbd5e1;
-      min-height: 100vh;
-      padding: 30px 20px;
+      background: linear-gradient(135deg, #0a192f 0%, #1b3a52 100%); color: #cbd5e1; min-height: 100vh; padding: 30px 20px;
     }
     .container { max-width: 1200px; margin: 0 auto; }
     .back-btn { 
@@ -1086,6 +1084,54 @@ router.get("/results/:sha256", requireWebAuth, async (req, res) => {
       </div>
     </div>
 
+    <!-- RUN ALGORITHM SECTION -->
+    <div class="analysis-section" style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%); border-left: 4px solid #6366f1;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <div class="section-title" style="margin: 0;"><span class="icon">⚙️</span> Weighted Risk Algorithm</div>
+        <button id="runAlgorithmBtn" onclick="runAlgorithm('${sha256}')" style="padding: 10px 20px; background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s;">
+          ▶️ Run Algorithm
+        </button>
+      </div>
+      <div id="algorithmResults" style="display: none;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px;">
+          <div class="metric">
+            <div class="metric-label">Final Score</div>
+            <div class="metric-value" id="finalScore" style="color: #6366f1;">--</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Final Status</div>
+            <div class="metric-value" id="finalStatus" style="color: #6366f1;">--</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Confidence</div>
+            <div class="metric-value" id="confidence" style="color: #6366f1;">--</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Data Sources</div>
+            <div class="metric-value" id="dataSources" style="color: #6366f1;">--</div>
+          </div>
+        </div>
+
+        <div style="background: rgba(10, 25, 47, 0.5); border: 1px solid #1e293b; border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+          <div style="font-weight: 600; color: #e2e8f0; margin-bottom: 12px;">Score Breakdown:</div>
+          <div id="breakdownTable" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+            <!-- Breakdown will be populated here -->
+          </div>
+        </div>
+
+        <div style="background: rgba(10, 25, 47, 0.5); border: 1px solid #1e293b; border-radius: 8px; padding: 15px;">
+          <div style="font-weight: 600; color: #e2e8f0; margin-bottom: 12px;">Weights Used:</div>
+          <div id="weightsTable" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+            <!-- Weights will be populated here -->
+          </div>
+        </div>
+      </div>
+      <div id="algorithmLoading" style="display: none; text-align: center; padding: 20px;">
+        <div style="font-size: 24px; margin-bottom: 10px;">⏳</div>
+        <div style="color: #94a3b8;">Calculating weighted risk score...</div>
+      </div>
+    </div>
+
     <!-- 1. ML MODEL PREDICTION -->
     <div class="analysis-section ml">
       <div class="section-title"><span class="icon">🤖</span> ML Model Prediction</div>
@@ -1206,7 +1252,7 @@ router.get("/results/:sha256", requireWebAuth, async (req, res) => {
     res.send(html);
   } catch (err) {
     console.error("Failed to load results:", err.message);
-    res.status(500).send(`<html><body style="background:#0d1b2a;color:white;text-align:center;padding:50px"><h1>❌ Error</h1><p>\${err.message}</p><a href="/uploadapp/apps" style="color:#90e0ef">← Back</a></body></html>`);
+    res.status(500).send(`<html><body style="background:#0a192f;color:white;text-align:center;padding:50px"><h1>❌ Error</h1><p>\${err.message}</p><a href="/uploadapp/apps" style="color:#90e0ef">← Back</a></body></html>`);
   }
 });
 
@@ -1307,8 +1353,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           .logo-icon {
             width: 32px;
             height: 32px;
-            background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
-            border-radius: 8px;
+            background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); border-radius: 8px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -1430,7 +1475,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           .user-avatar {
             width: 32px;
             height: 32px;
-            background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+            background: #3a3a3a;
             border-radius: 50%;
             display: flex;
             align-items: center;
@@ -1642,22 +1687,34 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           }
 
           th {
-            padding: 12px 15px;
+            padding: 8px 6px;
             text-align: left;
             color: #94a3b8;
-            font-size: 11px;
+            font-size: 10px;
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.5px;
             border-bottom: 1px solid #1d3557;
           }
 
+          th:nth-child(1) { width: 10%; }
+          th:nth-child(2) { width: 9%; }
+          th:nth-child(3) { width: 8%; }
+          th:nth-child(4) { width: 21%; }
+          th:nth-child(5) { width: 52%; }
+
           td {
-            padding: 15px;
+            padding: 10px 8px;
             border-bottom: 1px solid #1d3557;
             color: #cbd5e1;
             font-size: 13px;
           }
+
+          td:nth-child(1) { width: 10%; }
+          td:nth-child(2) { width: 9%; }
+          td:nth-child(3) { width: 8%; }
+          td:nth-child(4) { width: 21%; }
+          td:nth-child(5) { width: 52%; }
 
           tr:last-child td {
             border-bottom: none;
@@ -1668,8 +1725,31 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           }
 
           .file-info {
-            font-size: 12px;
+            font-size: 10px;
             color: #94a3b8;
+            margin-top: 2px;
+          }
+
+          td:nth-child(1), td:nth-child(2), td:nth-child(3) {
+            padding: 10px 6px;
+            font-size: 12px;
+          }
+
+          .app-name {
+            font-weight: 600;
+            color: white;
+            font-size: 12px;
+          }
+
+          .package-name {
+            font-family: 'Courier New', monospace;
+            font-size: 10px;
+            color: #94a3b8;
+          }
+
+          .permissions {
+            font-size: 11px;
+            color: #cbd5e1;
             margin-top: 2px;
           }
 
@@ -1708,66 +1788,98 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           }
 
           .actions {
-            min-width: 200px;
+            padding: 10px 6px;
+            position: relative;
+          }
+
+          .analysis-columns {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 10px;
+          }
+
+          .analysis-col {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            align-items: center;
+            text-align: center;
+          }
+
+          .col-title {
+            font-size: 9px;
+            font-weight: 700;
+            color: #cbd5e1;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            margin-bottom: 2px;
+          }
+
+          .bottom-actions {
+            display: flex;
+            justify-content: center;
+            gap: 6px;
+            flex-wrap: wrap;
           }
 
           button {
-            padding: 8px 16px;
+            padding: 7px 10px;
             border: none;
-            border-radius: 6px;
+            border-radius: 4px;
             cursor: pointer;
-            font-size: 11px;
+            font-size: 10px;
             font-weight: 500;
             transition: all 0.2s;
-            margin: 2px;
-            width: 130px;
+            margin: 0;
             white-space: nowrap;
           }
 
-          .btn-mobsf, .btn-report, .btn-view, .btn-sandbox, .btn-vt, .btn-download, .btn-analysis {
+          .analysis-col button {
+            width: 100%;
+            font-size: 9px;
+            padding: 6px 8px;
+          }
+
+          .bottom-actions button {
+            flex: 0 0 auto;
+            font-size: 10px;
+            padding: 7px 10px;
+          }
+
+          .btn-mobsf, .btn-report, .btn-view, .btn-vt, .btn-download, .btn-analysis, .btn-dynamic {
             background: #2563eb;
             color: white;
-            flex: 0 0 auto;
+          }
+
+          .btn-delete-action {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            color: white;
+            border: none;
+            padding: 7px 14px;
+          }
+
+          .btn-delete-action:hover {
+            background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
           }
 
           .btn-remarks {
             background: #059669;
             color: white;
-            flex: 0 0 auto;
           }
 
           .btn-remarks:hover {
             background: #047857;
           }
 
-          .btn-mobsf:hover, .btn-report:hover, .btn-view:hover, .btn-sandbox:hover, .btn-vt:hover, .btn-download:hover, .btn-analysis:hover {
+          .btn-mobsf:hover, .btn-report:hover, .btn-view:hover, .btn-vt:hover, .btn-download:hover, .btn-analysis:hover, .btn-dynamic:hover {
             background: #1d4ed8;
-          }
-
-          .btn-delete {
-            width: 28px;
-            height: 28px;
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid #7f1d1d;
-            color: #ef4444;
-            padding: 0;
-            border-radius: 5px;
-            position: absolute;
-            right: 10px;
-            bottom: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: all 0.3s;
-          }
-
-          .btn-delete:hover {
-            background: #7f1d1d;
-            color: white;
-          }
-
-          .btn-delete i {
-            font-size: 12px;
           }
 
           tr {
@@ -1813,18 +1925,18 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           }
 
           .mobsf-info, .vt-info {
-            font-size: 11px;
+            font-size: 10px;
             color: #60a5fa;
-            margin-top: 4px;
+            margin-top: 2px;
           }
 
           .security-score {
             font-weight: bold;
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
             display: inline-block;
-            margin-top: 2px;
+            margin-top: 1px;
           }
 
           .score-high {
@@ -1860,113 +1972,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             color: #ef4444;
           }
 
-          /* SOC Remarks Modal */
-          .modal {
-            display: none;
-            position: fixed;
-            z-index: 10000;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.7);
-            align-items: center;
-            justify-content: center;
-          }
 
-          .modal.active {
-            display: flex;
-          }
-
-          .modal-content {
-            background: #112240;
-            border: 1px solid #1d3557;
-            border-radius: 8px;
-            padding: 30px;
-            width: 90%;
-            max-width: 600px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-          }
-
-          .modal-header {
-            color: #e2e8f0;
-            font-size: 20px;
-            font-weight: 600;
-            margin-bottom: 20px;
-          }
-
-          .modal-body {
-            margin-bottom: 20px;
-          }
-
-          .form-group {
-            margin-bottom: 15px;
-          }
-
-          .form-group label {
-            display: block;
-            color: #94a3b8;
-            font-size: 13px;
-            margin-bottom: 8px;
-            font-weight: 500;
-          }
-
-          .form-group textarea {
-            width: 100%;
-            background: #0a192f;
-            border: 1px solid #1d3557;
-            border-radius: 6px;
-            padding: 12px;
-            color: #e2e8f0;
-            font-size: 13px;
-            font-family: inherit;
-            resize: vertical;
-            min-height: 120px;
-          }
-
-          .form-group textarea:focus {
-            outline: none;
-            border-color: #2563eb;
-          }
-
-          .form-group select {
-            width: 100%;
-            background: #0a192f;
-            border: 1px solid #1d3557;
-            border-radius: 6px;
-            padding: 10px;
-            color: #e2e8f0;
-            font-size: 13px;
-          }
-
-          .form-group select:focus {
-            outline: none;
-            border-color: #2563eb;
-          }
-
-          .modal-footer {
-            display: flex;
-            gap: 10px;
-            justify-content: flex-end;
-          }
-
-          .btn-modal {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: 500;
-            transition: all 0.2s;
-          }
-
-          .btn-submit {
-            background: #2563eb;
-            color: white;
-          }
-
-          .btn-submit:hover {
-            background: #1d4ed8;
           }
 
           .btn-cancel {
@@ -2133,94 +2139,93 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             <td>
               <div class="app-name">${app.appName || "Unknown App"}</div>
               <div class="file-info">Uploaded: ${uploadDate}</div>
-              ${app.source ? `<div class="file-info">Source: ${app.source}</div>` : ""}
-              ${app.lastMobsfAnalysis ? `<div class="file-info">MobSF: ${new Date(app.lastMobsfAnalysis).toLocaleDateString()}</div>` : ""}
-              ${app.lastVirusTotalAnalysis ? `<div class="file-info">VirusTotal: ${new Date(app.lastVirusTotalAnalysis).toLocaleDateString()}</div>` : ""}
             </td>
             <td>
               <div class="package-name">${app.packageName}</div>
-              ${permissionCount > 0 ? `<div class="permissions">${permissionCount} permissions</div>` : ""}
-              ${hasMobsfAnalysis && app.mobsfAnalysis.dangerous_permissions ? 
-                `<div class="permissions">${app.mobsfAnalysis.dangerous_permissions.length} dangerous perms</div>` : ""}
+              ${permissionCount > 0 ? `<div class="permissions">${permissionCount} perms</div>` : ""}
             </td>
             <td>
               <div class="file-info">${fileInfo}</div>
-              <div class="file-info">Size: ${app.sizeMB?.toFixed(2) || 0} MB</div>
-              ${app.sha256 ? `<div class="file-info" title="${app.sha256}">SHA-256: ${app.sha256.substring(0, 16)}...</div>` : ""}
+              <div class="file-info">${app.sizeMB?.toFixed(1) || 0}MB</div>
             </td>
             <td>
               <span class="status ${app.status || "unknown"}">
                 ${app.status || "unknown"}
               </span>
               ${hasMobsfAnalysis ? `
-                <div class="mobsf-info">
-                  <span class="security-score" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8;">Static Analysis Score: ${app.mobsfAnalysis.security_score}/100</span>
+                <div class="mobsf-info" style="margin-top: 4px;">
+                  <span class="security-score" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8;">Score: ${app.mobsfAnalysis.security_score}/100</span>
                 </div>
-                <div class="mobsf-info">
-                  ${app.mobsfAnalysis.dangerous_permissions?.length > 0 ? `${app.mobsfAnalysis.dangerous_permissions.length} dangerous permissions` : "No dangerous permissions"}
-                  ${app.mobsfAnalysis.high_risk_findings > 0 ? ` | ${app.mobsfAnalysis.high_risk_findings} high risk findings` : ""}
+                <div class="mobsf-info" style="font-size: 10px;">
+                  ${app.mobsfAnalysis.dangerous_permissions?.length > 0 ? `${app.mobsfAnalysis.dangerous_permissions.length} dangerous perms` : ""}
+                  ${app.mobsfAnalysis.high_risk_findings > 0 ? `| ${app.mobsfAnalysis.high_risk_findings} risks` : ""}
                 </div>
               ` : ""}
               ${hasVirusTotalAnalysis ? `
-                <div class="vt-info">
-                  <span class="security-score" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8;">
-                    VT Detection: ${app.virusTotalAnalysis.detectionRatio}
-                  </span>
+                <div class="vt-info" style="margin-top: 4px;">
+                  <span class="security-score" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8;">VT: ${app.virusTotalAnalysis.detectionRatio}</span>
                 </div>
-                <div class="vt-info">
-                  Malicious: ${app.virusTotalAnalysis.maliciousCount} | Suspicious: ${app.virusTotalAnalysis.suspiciousCount}
+                <div class="vt-info" style="font-size: 10px;">
+                  M:${app.virusTotalAnalysis.maliciousCount} | S:${app.virusTotalAnalysis.suspiciousCount}
                 </div>
               ` : ""}
               ${app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe' ? `
-                <div class="ml-info" style="margin-top: 8px; padding: 6px; background: rgba(99, 102, 241, 0.1); border-radius: 4px; border-left: 3px solid #6366f1;">
-                  <span class="security-score" style="background: rgba(99, 102, 241, 0.2); color: #6366f1; margin: 0;">
-                    🤖 ML Model Analysis
-                  </span>
-                  <div class="ml-info" style="font-size: 11px; color: #6366f1; margin-top: 2px;">
-                    Prediction: ${app.mlPredictionLabel} | Score: ${(app.mlPredictionScore ?? 0).toFixed(3)}
-                  </div>
-                  ${app.mlAnalysisTimestamp ? `<div class="ml-info" style="font-size: 10px; color: #64748b;">Analysis: ${new Date(app.mlAnalysisTimestamp).toLocaleDateString()}</div>` : ""}
+                <div class="ml-info" style="margin-top: 4px; padding: 3px; background: rgba(99, 102, 241, 0.1); border-radius: 2px; border-left: 2px solid #6366f1;">
+                  <span class="security-score" style="background: rgba(99, 102, 241, 0.2); color: #6366f1; margin: 0; font-size: 9px;">ML S:${(app.mlPredictionScore ?? 0).toFixed(2)}</span>
                 </div>
               ` : ""}
             </td>
             <td class="actions">
-              <div class="btn-group">
-                <div class="btn-group-left">
-                  <button class="btn-sandbox" onclick="uploadToSandbox('${app.sha256}', '${app.packageName}')">
-                    Upload to Sandbox
-                  </button>
+              <div class="analysis-columns">
+                <!-- Static Analysis Column -->
+                <div class="analysis-col">
+                  <div class="col-title">Static Analysis</div>
                   <button class="btn-mobsf" onclick="runMobsfAnalysis('${app.sha256}', '${app.packageName}')" title="Run MobSF Static Analysis">
-                    ${hasMobsfAnalysis ? "Re-analyze" : "Analyze"} MobSF
+                    ${hasMobsfAnalysis ? "Re-analyze" : "Do Static"} Analysis
                   </button>
                   ${hasMobsfAnalysis ? `
                     <button class="btn-report" onclick="downloadMobsfReport('${app.sha256}')" title="Download MobSF PDF Report">
-                      Download PDF
+                      📄 Download PDF
                     </button>
                   ` : ""}
-                  ${app.apkFileName ? `
-                    <button class="btn-download" onclick="downloadFile('${app.apkFileName}')">
-                      Download APK
-                    </button>
-                  ` : ""}
+                </div>
+
+                <!-- Dynamic Analysis Column -->
+                <div class="analysis-col">
+                  <div class="col-title">Dynamic Analysis</div>
+                  <button class="btn-dynamic" onclick="alert('Dynamic Analysis feature coming soon')" title="Do Dynamic Analysis">
+                    Do Dynamic Analysis
+                  </button>
+                </div>
+
+                <!-- Multi-Engine Analysis Column -->
+                <div class="analysis-col">
+                  <div class="col-title">Multi-Engine Analysis</div>
                   <button class="btn-vt" onclick="runVirusTotalAnalysis('${app.sha256}', '${app.packageName}')" title="Run VirusTotal Analysis">
-                    ${hasVirusTotalAnalysis ? "Re-analyze" : "Analyze"} VirusTotal
+                    Multi-Engine Analysis
                   </button>
                   ${hasVirusTotalAnalysis ? `
                     <button class="btn-view" onclick="viewVirusTotalResults('${app.sha256}', '${app.packageName}')" title="View VirusTotal Results">
-                      View Results
+                      👁️ View Results
                     </button>
                   ` : ""}
-                  <button class="btn-analysis" onclick="window.location.href = getBasePath() + '/results/${app.sha256}'" title="View All Analysis Results" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: 1px solid rgba(102, 126, 234, 0.5);">
-                    📊 Results
-                  </button>
-                  <button class="btn-remarks" onclick="openRemarksModal('${app.sha256}', '${app.packageName}', '${app.appName || "Unknown App"}')" title="Add SOC Analyst Remarks">
-                    SOC Remarks
-                  </button>
                 </div>
               </div>
-              <button class="btn-delete" onclick="deleteApp('${app.sha256}', '${app.packageName}')" title="Delete App">
-                <i class="fas fa-trash"></i>
-              </button>
+
+              <!-- Bottom Action Buttons -->
+              <div class="bottom-actions">
+                <button class="btn-analysis" onclick="window.location.href = getBasePath() + '/results/${app.sha256}'" title="View All Analysis Results">
+                  📊 Results
+                </button>
+                ${app.apkFileName ? `
+                  <button class="btn-download" onclick="downloadFile('${app.apkFileName}')">
+                    📥 Download APK
+                  </button>
+                ` : ""}
+                <button class="btn-delete-action" onclick="deleteApp('${app.sha256}', '${app.packageName}')" title="Delete App">
+                  🗑️ Delete
+                </button>
+              </div>
             </td>
           </tr>
         `;
@@ -2232,36 +2237,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           </div>
         </div>
 
-        <!-- SOC Analyst Remarks Modal -->
-        <div id="remarksModal" class="modal">
-          <div class="modal-content">
-            <div class="modal-header">SOC Analyst Remarks</div>
-            <div class="modal-body">
-              <div class="form-group">
-                <label>Application</label>
-                <input type="text" id="modal-app-name" readonly style="width: 100%; background: #0a192f; border: 1px solid #1d3557; border-radius: 6px; padding: 10px; color: #94a3b8; font-size: 13px;">
-              </div>
-              <div class="form-group">
-                <label>Update Status</label>
-                <select id="modal-status">
-                  <option value="">-- Keep Current Status --</option>
-                  <option value="safe">Safe</option>
-                  <option value="malicious">Malicious</option>
-                  <option value="suspicious">Suspicious</option>
-                  <option value="unknown">Unknown</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label>SOC Analyst Remarks</label>
-                <textarea id="modal-remarks" placeholder="Enter your analysis remarks here..."></textarea>
-              </div>
-            </div>
-            <div class="modal-footer">
-              <button class="btn-modal btn-cancel" onclick="closeRemarksModal()">Cancel</button>
-              <button class="btn-modal btn-submit" onclick="submitRemarks()">Submit</button>
-            </div>
-          </div>
-        </div>
+
       `;
     }
 
@@ -2466,70 +2442,81 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             }
           }
 
-          // SOC Analyst Remarks Modal Functions
-          let currentAppSha256 = '';
-          let currentAppPackage = '';
+          // Run Weighted Algorithm
+          function runAlgorithm(sha256) {
+            const loading = document.getElementById('algorithmLoading');
+            const results = document.getElementById('algorithmResults');
+            const btn = document.getElementById('runAlgorithmBtn');
 
-          function openRemarksModal(sha256, packageName, appName) {
-            currentAppSha256 = sha256;
-            currentAppPackage = packageName;
-            document.getElementById('modal-app-name').value = appName + ' (' + packageName + ')';
-            document.getElementById('modal-status').value = '';
-            document.getElementById('modal-remarks').value = '';
-            document.getElementById('remarksModal').classList.add('active');
-          }
+            loading.style.display = 'block';
+            results.style.display = 'none';
+            btn.disabled = true;
+            btn.style.opacity = '0.5';
 
-          function closeRemarksModal() {
-            document.getElementById('remarksModal').classList.remove('active');
-            currentAppSha256 = '';
-            currentAppPackage = '';
-          }
-
-          function submitRemarks() {
-            const status = document.getElementById('modal-status').value;
-            const remarks = document.getElementById('modal-remarks').value.trim();
-
-            if (!remarks) {
-              alert('Please enter remarks before submitting.');
-              return;
-            }
-
-            const payload = {
-              socRemarks: remarks,
-              remarksTimestamp: new Date().toISOString()
-            };
-
-            if (status) {
-              payload.status = status;
-            }
-
-            fetch(getBasePath() + '/update-remarks/' + currentAppSha256, {
+            fetch('/uploadapp/run-algorithm/' + sha256, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
+              headers: { 'Content-Type': 'application/json' }
             })
             .then(response => response.json())
             .then(data => {
-              if (data.error) {
-                alert('Error: ' + data.error);
+              if (data.success) {
+                const algo = data.algorithmResult;
+                
+                // Update summary metrics
+                document.getElementById('finalScore').textContent = algo.finalScore.toFixed(2);
+                document.getElementById('finalScore').style.color = 
+                  algo.finalScore < 35 ? '#10b981' : algo.finalScore < 60 ? '#f59e0b' : '#ef4444';
+                
+                document.getElementById('finalStatus').textContent = algo.finalStatus;
+                document.getElementById('finalStatus').style.color = 
+                  algo.finalStatus === 'SAFE' ? '#10b981' : algo.finalStatus === 'SUSPICIOUS' ? '#f59e0b' : '#ef4444';
+                
+                document.getElementById('confidence').textContent = algo.confidence + '%';
+                document.getElementById('dataSources').textContent = algo.dataSourcesCount + '/4';
+
+                // Build breakdown table
+                const breakdownTable = document.getElementById('breakdownTable');
+                breakdownTable.innerHTML = '';
+                const sources = algo.breakdown.sources;
+                for (const [key, value] of Object.entries(sources)) {
+                  if (value !== null) {
+                    const scoreItem = document.createElement('div');
+                    scoreItem.style.cssText = 'background: rgba(10, 25, 47, 0.8); border: 1px solid #1e293b; border-radius: 6px; padding: 10px; text-align: center;';
+                    scoreItem.innerHTML = \`<div style="font-size: 11px; color: #94a3b8; text-transform: uppercase; margin-bottom: 5px;">\${key.replace('_', ' ')}</div><div style="font-size: 18px; font-weight: 700; color: #60a5fa;">\${value.toFixed(2)}</div>\`;
+                    breakdownTable.appendChild(scoreItem);
+                  }
+                }
+
+                // Build weights table
+                const weightsTable = document.getElementById('weightsTable');
+                weightsTable.innerHTML = '';
+                const weights = algo.breakdown.weights;
+                for (const [key, value] of Object.entries(weights)) {
+                  if (value > 0) {
+                    const weightItem = document.createElement('div');
+                    weightItem.style.cssText = 'background: rgba(10, 25, 47, 0.8); border: 1px solid #1e293b; border-radius: 6px; padding: 10px; text-align: center;';
+                    weightItem.innerHTML = \`<div style="font-size: 11px; color: #94a3b8; text-transform: uppercase; margin-bottom: 5px;">\${key.replace('_', ' ')}</div><div style="font-size: 18px; font-weight: 700; color: #8b5cf6;">\${(value * 100).toFixed(0)}%</div>\`;
+                    weightsTable.appendChild(weightItem);
+                  }
+                }
+
+                loading.style.display = 'none';
+                results.style.display = 'block';
               } else {
-                alert('SOC Analyst remarks submitted successfully!' + 
-                      (status ? '\\nStatus updated to: ' + status : ''));
-                closeRemarksModal();
-                location.reload();
+                alert('Error: ' + (data.error || 'Unknown error'));
+                loading.style.display = 'none';
               }
+              btn.disabled = false;
+              btn.style.opacity = '1';
             })
             .catch(error => {
               alert('Error: ' + error.message);
+              loading.style.display = 'none';
+              btn.disabled = false;
+              btn.style.opacity = '1';
             });
           }
 
-          // Close modal when clicking outside
-          document.getElementById('remarksModal').addEventListener('click', function(e) {
-            if (e.target === this) {
-              closeRemarksModal();
-            }
-          });
         </script>
       </body>
       </html>
@@ -2540,7 +2527,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
     console.error("Failed to fetch apps for upload app page:", err.message);
     res.status(500).send(`
       <html>
-      <body style="background: #0d1b2a; color: white; font-family: Arial; text-align: center; padding: 50px;">
+      <body style="background: #0a192f; color: white; font-family: Arial; text-align: center; padding: 50px;">
         <h1>Error Loading Apps</h1>
         <p>${err.message}</p>
       </body>
@@ -2639,6 +2626,69 @@ router.post("/update-remarks/:sha256", requireWebAuth, async (req, res) => {
   }
 });
 
+// NEW ENDPOINT: POST /update-final-decision/:sha256 - SOC Analyst Final Decision
+router.post("/update-final-decision/:sha256", requireWebAuth, async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const { sha256 } = req.params;
+  const { finalStatus, socRemarks, decisionTimestamp } = req.body;
+
+  try {
+    // Validate inputs
+    if (!finalStatus || !['safe', 'suspicious', 'malicious'].includes(finalStatus)) {
+      return res.status(400).json({ error: "Invalid final status" });
+    }
+
+    if (!socRemarks || socRemarks.trim().length === 0) {
+      return res.status(400).json({ error: "Remarks are required" });
+    }
+
+    const dynamicIndex = getDynamicIndexName();
+    const searchRes = await esClient.search({
+      index: dynamicIndex,
+      body: {
+        query: { term: { sha256: sha256 } },
+      },
+    });
+
+    if (!searchRes.hits.hits.length) {
+      return res.status(404).json({ error: "App not found" });
+    }
+
+    const docId = searchRes.hits.hits[0]._id;
+    const analyst = req.session.username || 'Unknown Analyst';
+
+    // Update database with final decision
+    const updateBody = {
+      finalDecision: {
+        status: finalStatus,
+        remarks: socRemarks,
+        decidedBy: analyst,
+        decidedAt: decisionTimestamp || new Date().toISOString()
+      },
+      status: finalStatus, // Also update main status field for sorting/filtering
+      lastUpdatedBy: analyst,
+      lastUpdated: new Date().toISOString()
+    };
+
+    await esClient.update({
+      index: dynamicIndex,
+      id: docId,
+      body: {
+        doc: updateBody,
+      },
+    });
+
+    console.log(`✅ Final decision saved for ${sha256} by ${analyst} - Status: ${finalStatus}`);
+    res.json({ 
+      success: true, 
+      message: `Final decision saved successfully. App marked as ${finalStatus.toUpperCase()}.`
+    });
+  } catch (err) {
+    console.error(`Failed to save final decision for ${sha256}:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Route: GET /list (Get apps as JSON, no auth required)
 router.get("/list", async (req, res) => {
   const esClient = req.app.get("esClient");
@@ -2706,7 +2756,64 @@ router.delete("/clear-today", requireWebAuth, async (req, res) => {
   }
 });
 
+// POST /run-algorithm/:sha256 - Run weighted risk algorithm - REQUIRES WEB AUTH
+router.post("/run-algorithm/:sha256", requireWebAuth, async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const { sha256 } = req.params;
+  
+  try {
+    const selectedDate = req.query.date || new Date().toISOString().split("T")[0];
+    const indexName = getIndexNameForDate(selectedDate);
+    
+    // Fetch app data from database
+    const searchRes = await esClient.search({
+      index: indexName,
+      size: 1,
+      query: { term: { sha256: { value: sha256 } } },
+    });
+
+    if (searchRes.hits.hits.length === 0) {
+      return res.status(404).json({ error: "App not found" });
+    }
+
+    const app = searchRes.hits.hits[0]._source;
+    const docId = searchRes.hits.hits[0]._id;
+
+    // Calculate weighted risk score
+    const algorithmResult = calculateWeightedRiskScore(app);
+
+    // Save result to database
+    try {
+      await esClient.update({
+        index: indexName,
+        id: docId,
+        body: {
+          doc: {
+            algorithmResult: algorithmResult,
+            algorithmRunAt: new Date().toISOString()
+          }
+        }
+      });
+      console.log(`✅ Algorithm result saved for ${app.packageName}`);
+    } catch (updateErr) {
+      console.log(`⚠️ Could not save algorithm result: ${updateErr.message}`);
+    }
+
+    res.json({
+      success: true,
+      algorithmResult: algorithmResult,
+      appName: app.appName,
+      packageName: app.packageName
+    });
+  } catch (err) {
+    console.error(`Failed to run algorithm for ${sha256}:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /scan - Original scan endpoint (backward compatibility) - NO AUTH REQUIRED
 router.post("/scan", receiveAppData);
 
 module.exports = router;
+
+

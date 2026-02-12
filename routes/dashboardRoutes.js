@@ -205,8 +205,7 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
         .logo-icon {
             width: 32px;
             height: 32px;
-            background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
-            border-radius: 8px;
+            background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); border-radius: 8px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -328,7 +327,7 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
         .user-avatar {
             width: 32px;
             height: 32px;
-            background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+            background: #3a3a3a;
             border-radius: 50%;
             display: flex;
             align-items: center;
@@ -1406,3 +1405,5 @@ router.delete('/delete-app/:id', async (req, res) => {
 });
 
 module.exports = router;
+
+

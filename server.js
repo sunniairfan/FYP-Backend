@@ -206,7 +206,7 @@ app.get("/login", (req, res) => {
       <title>Android Malware Detection System - Login</title>
       <style>
         body {
-          background: linear-gradient(135deg, #0a0f1c 0%, #1a1f3a 50%, #0d1421 100%);
+          background: #0a192f;
           color: #60a5fa;
           font-family: 'Courier New', monospace;
           margin: 0;
@@ -264,7 +264,7 @@ app.get("/login", (req, res) => {
           box-shadow: 0 0 10px rgba(96, 165, 250, 0.3);
         }
         .login-btn {
-          background: linear-gradient(45deg, #1e40af, #3b82f6);
+          background: #3a3a3a;
           color: white;
           border: none;
           padding: 15px 30px;
@@ -277,7 +277,7 @@ app.get("/login", (req, res) => {
           box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
         }
         .login-btn:hover {
-          background: linear-gradient(45deg, #2563eb, #60a5fa);
+          background: #3a3a3a;
           transform: translateY(-2px);
           box-shadow: 0 6px 20px rgba(96, 165, 250, 0.4);
         }
@@ -400,8 +400,7 @@ app.get("/", requireAuth, (req, res) => {
         .logo-icon {
           width: 32px;
           height: 32px;
-          background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
-          border-radius: 8px;
+          background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); border-radius: 8px;
           display: flex;
           align-items: center;
           justify-content: center;
@@ -503,7 +502,7 @@ app.get("/", requireAuth, (req, res) => {
         .user-avatar {
           width: 32px;
           height: 32px;
-          background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+          background: #3a3a3a;
           border-radius: 50%;
           display: flex;
           align-items: center;
@@ -568,7 +567,7 @@ app.get("/", requireAuth, (req, res) => {
         .card-icon {
           width: 48px;
           height: 48px;
-          background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+          background: #3a3a3a;
           border-radius: 10px;
           display: flex;
           align-items: center;
@@ -688,3 +687,5 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`   - Mobile Upload: http://localhost:${PORT}/uploadapp/upload (No Auth Required)`);
   console.log(`   - Mobile Scan: http://localhost:${PORT}/api/app/upload (No Auth Required)`);
 });
+
+
