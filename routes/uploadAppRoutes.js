@@ -2125,6 +2125,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
         const permissionCount = app.permissions ? app.permissions.length : 0;
         const hasMobsfAnalysis = app.mobsfAnalysis && app.mobsfAnalysis.security_score !== undefined;
         const hasVirusTotalAnalysis = app.virusTotalAnalysis && app.virusTotalAnalysis.detectionRatio;
+        const hasDynamicAnalysis = app.dynamicAnalysis && app.dynamicAnalysis.status === 'completed';
         const hasApkFile = app.apkFilePath && app.apkFileName;
         const appType = app.appType || 'system';
 
@@ -2193,9 +2194,17 @@ router.get("/apps", requireWebAuth, async (req, res) => {
                 <!-- Dynamic Analysis Column -->
                 <div class="analysis-col">
                   <div class="col-title">Dynamic Analysis</div>
-                  <button class="btn-dynamic" onclick="alert('Dynamic Analysis feature coming soon')" title="Do Dynamic Analysis">
-                    Do Dynamic Analysis
+                  <button class="btn-dynamic" onclick="runDynamicAnalysis('${app.sha256}', '${app.packageName}', this)" title="Do Dynamic Analysis">
+                    ${hasDynamicAnalysis ? 'Re-run Dynamic Analysis' : 'Do Dynamic Analysis'}
                   </button>
+                  ${hasDynamicAnalysis ? `
+                    <button class="btn-report" onclick="downloadDynamicReport('${app.sha256}')" title="Download Dynamic Analysis PDF">
+                      📄 Download PDF
+                    </button>
+                    <button class="btn-view" onclick="viewDynamicResults('${app.sha256}')" title="View Dynamic Analysis Results">
+                      👁️ View Results
+                    </button>
+                  ` : ''}
                 </div>
 
                 <!-- Multi-Engine Analysis Column -->
@@ -2400,6 +2409,179 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             const selectedDate = document.getElementById('date-picker').value;
             const url = getBasePath() + '/report/' + sha256 + (selectedDate ? '?date=' + selectedDate : '');
             window.location.href = url;
+          }
+
+          function downloadDynamicReport(sha256) {
+            const selectedDate = document.getElementById('date-picker').value;
+            const url = getBasePath() + '/dynamic-report/' + sha256 + (selectedDate ? '?date=' + selectedDate : '');
+            window.location.href = url;
+          }
+
+          function viewDynamicResults(sha256) {
+            const selectedDate = document.getElementById('date-picker').value;
+            window.location.href = getBasePath() + '/dynamic-results/' + sha256 + (selectedDate ? '?date=' + selectedDate : '');
+          }
+
+          function runDynamicAnalysis(sha256, packageName, btnEl) {
+            const selectedDate = document.getElementById('date-picker').value;
+            const dateParam = selectedDate ? '?date=' + selectedDate : '';
+            const waitSec = 60; // default capture window in seconds
+
+            // Build an overlay/modal to show progress steps
+            const overlay = document.createElement('div');
+            overlay.id = 'dynOverlay_' + sha256;
+            overlay.style.cssText = [
+              'position:fixed;top:0;left:0;width:100%;height:100%;',
+              'background:rgba(0,0,0,0.75);z-index:9999;',
+              'display:flex;align-items:center;justify-content:center;'
+            ].join('');
+
+            overlay.innerHTML = \`
+              <div style="background:#112240;border:1px solid #1d4ed8;border-radius:12px;padding:28px 36px;max-width:520px;width:92%;text-align:center;max-height:90vh;overflow-y:auto;">
+                <h2 style="color:#60a5fa;margin:0 0 6px 0;font-size:18px;">⚙️ Dynamic Analysis</h2>
+                <p style="color:#94a3b8;font-size:12px;margin:0 0 16px 0;">\${packageName}</p>
+
+                <div id="dynSteps_\${sha256}" style="text-align:left;margin-bottom:16px;font-size:12px;">
+                  <div id="dynStep1_\${sha256}"  style="color:#94a3b8;padding:3px 0;">⏳ Getting device identifier from MobSF…</div>
+                  <div id="dynStep2_\${sha256}"  style="color:#64748b;padding:3px 0;">⬜ MobSFying the Android emulator…</div>
+                  <div id="dynStep3_\${sha256}"  style="color:#64748b;padding:3px 0;">⬜ Installing Root CA (enables HTTPS capture)…</div>
+                  <div id="dynStep4_\${sha256}"  style="color:#64748b;padding:3px 0;">⬜ Setting global HTTPS proxy…</div>
+                  <div id="dynStep5_\${sha256}"  style="color:#64748b;padding:3px 0;">⬜ Installing &amp; launching app on emulator…</div>
+                  <div id="dynStep6_\${sha256}"  style="color:#64748b;padding:3px 0;">⬜ Waiting for app to boot…</div>
+                  <div id="dynStep7_\${sha256}"  style="color:#64748b;padding:3px 0;">⬜ Applying Frida hooks (SSL bypass, root bypass, API monitor)…</div>
+                  <div id="dynStep8_\${sha256}"  style="color:#64748b;padding:3px 0;">⬜ Running exported activity tester…</div>
+                  <div id="dynStep9_\${sha256}"  style="color:#64748b;padding:3px 0;">⬜ Running activity tester…</div>
+                  <div id="dynStep10_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Capturing network traffic &amp; API calls…</div>
+                  <div id="dynStep11_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Collecting Frida API monitor data…</div>
+                  <div id="dynStep12_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Running TLS/SSL security tests…</div>
+                  <div id="dynStep13_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Stopping analysis &amp; finalising capture…</div>
+                  <div id="dynStep14_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Collecting Frida logs…</div>
+                  <div id="dynStep15_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Generating dynamic report…</div>
+                  <div id="dynStep16_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Cleaning up proxy…</div>
+                  <div id="dynStep17_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Saving results to database…</div>
+                </div>
+
+                <div id="dynResult_\${sha256}" style="display:none;"></div>
+
+                <div id="dynProgress_\${sha256}" style="width:100%;height:4px;background:#1e293b;border-radius:2px;overflow:hidden;margin-bottom:10px;">
+                  <div id="dynBar_\${sha256}" style="height:100%;width:0%;background:#3b82f6;transition:width 0.5s;"></div>
+                </div>
+
+                <p style="color:#64748b;font-size:11px;margin:0 0 14px 0;" id="dynTimer_\${sha256}">Elapsed: 0s</p>
+                <button id="dynCancelBtn_\${sha256}" onclick="document.getElementById('dynOverlay_\${sha256}').remove();"
+                  style="background:#ef4444;color:white;border:none;border-radius:6px;padding:8px 20px;cursor:pointer;font-size:12px;">
+                  Close
+                </button>
+              </div>
+            \`;
+
+            document.body.appendChild(overlay);
+
+            // Animate timer
+            const timerEl = document.getElementById('dynTimer_' + sha256);
+            const barEl = document.getElementById('dynBar_' + sha256);
+            const startTs = Date.now();
+            // Total expected ~175s for default 60s wait pipeline
+            const totalExpected = waitSec + 115;
+            const timerInterval = setInterval(() => {
+              const elapsed = Math.round((Date.now() - startTs) / 1000);
+              if (timerEl) timerEl.textContent = 'Elapsed: ' + elapsed + 's';
+              if (barEl) barEl.style.width = Math.min(95, Math.round((elapsed / totalExpected) * 100)) + '%';
+            }, 1000);
+
+            function markStep(n, status) {
+              const el = document.getElementById('dynStep' + n + '_' + sha256);
+              if (!el) return;
+              if (status === 'done')   { el.style.color = '#10b981'; el.textContent = el.textContent.replace('⬜','✅').replace('⏳','✅'); }
+              else if (status === 'active') { el.style.color = '#f59e0b'; el.textContent = el.textContent.replace('⬜','⏳'); }
+              else if (status === 'error')  { el.style.color = '#ef4444'; el.textContent = el.textContent.replace('⬜','❌').replace('⏳','❌'); }
+            }
+
+            // Approximate step timing (cumulative seconds)
+            const stepTimings = [0,2,8,12,15,30,42,48,65,80, 80+waitSec, 88+waitSec, 95+waitSec, 102+waitSec, 107+waitSec, 113+waitSec, 116+waitSec];
+            stepTimings.forEach((t, i) => {
+              if (i === 0) { markStep(1, 'active'); return; }
+              setTimeout(() => { markStep(i, 'done'); markStep(i + 1, 'active'); }, t * 1000);
+            });
+
+            if (btnEl) { btnEl.disabled = true; btnEl.textContent = '⏳ Running…'; }
+
+            fetch(getBasePath() + '/dynamic-analysis/' + sha256 + dateParam, { method: 'POST' })
+              .then(response => {
+                return response.text().then(text => {
+                  try {
+                    return { ok: response.ok, status: response.status, data: JSON.parse(text) };
+                  } catch (_) {
+                    return { ok: false, status: response.status, data: { error: 'Server returned non-JSON response (status ' + response.status + '). Make sure the server is running and try again.' } };
+                  }
+                });
+              })
+              .then(({ ok, status, data }) => {
+                clearInterval(timerInterval);
+                if (barEl) barEl.style.width = '100%';
+                // Mark all steps done
+                for (let i = 1; i <= 17; i++) markStep(i, data.error ? 'error' : 'done');
+
+                const resultEl = document.getElementById('dynResult_' + sha256);
+                if (resultEl) resultEl.style.display = 'block';
+
+                if (data.error) {
+                  if (resultEl) resultEl.innerHTML = \`
+                    <div style="background:#7f1d1d;border-radius:6px;padding:12px;color:#fca5a5;font-size:12px;margin-bottom:12px;">
+                      ❌ Dynamic analysis failed:<br><strong>\${data.error}</strong>
+                    </div>\`;
+                } else {
+                  const da = data.dynamicAnalysis || {};
+                  const tls = da.tls_tests || {};
+                  if (resultEl) resultEl.innerHTML = \`
+                    <div style="background:#052e16;border:1px solid #16a34a;border-radius:6px;padding:12px;color:#4ade80;font-size:12px;margin-bottom:12px;">
+                      ✅ Dynamic analysis completed!
+                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;text-align:left;">
+                        <span style="color:#94a3b8;">📱 MobSFy:</span><span style="color:#e2e8f0;">\${da.mobsfy_applied ? '✅' : '⚠️ Skipped'}</span>
+                        <span style="color:#94a3b8;">🔐 Root CA:</span><span style="color:#e2e8f0;">\${da.root_ca_installed ? '✅ Installed' : '⚠️ Skipped'}</span>
+                        <span style="color:#94a3b8;">🌐 Proxy:</span><span style="color:#e2e8f0;">\${da.proxy_set ? '✅ Set' : '⚠️ Skipped'}</span>
+                        <span style="color:#94a3b8;">🪝 Frida:</span><span style="color:#e2e8f0;">\${da.frida_applied ? '✅ Applied' : '⚠️ N/A'}</span>
+                        <span style="color:#94a3b8;">🏃 Activities:</span><span style="color:#e2e8f0;">\${da.exported_activities || 0} exported</span>
+                        <span style="color:#94a3b8;">🌍 Domains:</span><span style="color:#e2e8f0;">\${da.domains_count || 0}</span>
+                        <span style="color:#94a3b8;">📡 URLs:</span><span style="color:#e2e8f0;">\${da.urls_found || 0}</span>
+                        <span style="color:#94a3b8;">🕵️ Trackers:</span><span style="color:#e2e8f0;">\${da.trackers || 0}</span>
+                        <span style="color:#94a3b8;">⚠️ Net issues:</span><span style="color:#e2e8f0;">\${da.network_security_issues || 0}</span>
+                        \${tls.tls_misconfigured !== undefined ? \`<span style="color:#94a3b8;">🔒 TLS:</span><span style="color:\${tls.tls_misconfigured ? '#ef4444' : '#10b981'}">\${tls.tls_misconfigured ? '⚠️ Misconfigured' : '✅ OK'}</span>\` : ''}
+                      </div>
+                    </div>
+                    <button onclick="downloadDynamicReport('\${sha256}')"
+                      style="background:#2563eb;color:white;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:12px;margin-bottom:8px;width:100%;">
+                      📄 Download Dynamic Analysis PDF
+                    </button>\`;
+                }
+
+                if (btnEl) {
+                  btnEl.disabled = false;
+                  btnEl.textContent = 'Re-run Dynamic Analysis';
+                }
+
+                const cancelBtn = document.getElementById('dynCancelBtn_' + sha256);
+                if (cancelBtn) {
+                  cancelBtn.textContent = 'Close & Refresh';
+                  cancelBtn.onclick = () => {
+                    document.getElementById('dynOverlay_' + sha256)?.remove();
+                    location.reload();
+                  };
+                }
+              })
+              .catch(err => {
+                clearInterval(timerInterval);
+                const resultEl = document.getElementById('dynResult_' + sha256);
+                if (resultEl) {
+                  resultEl.style.display = 'block';
+                  resultEl.innerHTML = \`
+                    <div style="background:#7f1d1d;border-radius:6px;padding:12px;color:#fca5a5;font-size:12px;margin-bottom:12px;">
+                      ❌ Network error: \${err.message}
+                    </div>\`;
+                }
+                if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Do Dynamic Analysis'; }
+                for (let i = 13; i <= 17; i++) markStep(i, 'error');
+              });
           }
           
           function viewVirusTotalResults(sha256, packageName) {
@@ -2807,6 +2989,503 @@ router.post("/run-algorithm/:sha256", requireWebAuth, async (req, res) => {
     });
   } catch (err) {
     console.error(`Failed to run algorithm for ${sha256}:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Dynamic Analysis Routes ──────────────────────────────────────────────────
+
+// POST /dynamic-analysis/:sha256
+// Full automated dynamic analysis pipeline:
+//   start_analysis → frida hooks → tls_tests → wait → stop_analysis → report_json → save to ES
+router.post("/dynamic-analysis/:sha256", async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const sha256 = req.params.sha256;
+  const waitSeconds = parseInt(req.query.wait || req.body?.wait || "45", 10);
+
+  console.log(`[Dynamic Analysis] Starting pipeline for SHA256: ${sha256}`);
+
+  try {
+    // 1. Find app in ES to get the mobsfHash (MD5) from the static scan
+    const selectedDate = req.query.date || new Date().toISOString().split("T")[0];
+    const indexName = getIndexNameForDate(selectedDate);
+
+    const searchRes = await esClient.search({
+      index: indexName,
+      size: 1,
+      query: { term: { sha256: { value: sha256 } } },
+    });
+
+    if (searchRes.hits.hits.length === 0) {
+      return res.status(404).json({ error: "App not found in database" });
+    }
+
+    const docId = searchRes.hits.hits[0]._id;
+    const appData = searchRes.hits.hits[0]._source;
+    const md5Hash = appData.mobsfHash;
+
+    if (!md5Hash) {
+      return res.status(400).json({
+        error: "Static analysis must be completed first before running dynamic analysis. Please click 'Do Static Analysis' or 'Re-analyze Analysis' first.",
+      });
+    }
+
+    console.log(`[Dynamic Analysis] Using MD5 hash: ${md5Hash} for app: ${appData.packageName}`);
+
+    // 2. Mark as running in ES
+    await esClient.update({
+      index: indexName,
+      id: docId,
+      body: { doc: { dynamicAnalysisStatus: "running", dynamicAnalysisStarted: new Date().toISOString() } },
+    });
+
+    // 3. Run full pipeline
+    const pipelineResult = await mobsf.runFullDynamicAnalysis(md5Hash, waitSeconds);
+
+    const dynReport = pipelineResult.dynamicReport || {};
+
+    // 4. Extract key findings from dynamic report
+    const networkFindings = dynReport.network_security || dynReport.exported_activities || [];
+    const browsableActivities = dynReport.browsable_activities || [];
+    const trackers = dynReport.trackers || {};
+    const domains = dynReport.domains || {};
+    const emails = dynReport.emails || [];
+    const urls = dynReport.urls || [];
+    // TLS: prefer dedicated call result, fallback to dynamic report JSON fields
+    const tlsRaw = pipelineResult.tlsResult;
+    const hasTlsDirect = tlsRaw && typeof tlsRaw === 'object' && Object.keys(tlsRaw).length > 0;
+    // MobSF dynamic report JSON contains tls_tests array or individual flags
+    const tlsFromReport = dynReport.tls_tests || dynReport.ssl_tests || null;
+    const tlsFinal = hasTlsDirect ? tlsRaw : (tlsFromReport || null);
+    console.log('[Dynamic] tlsResult from dedicated call:', JSON.stringify(tlsRaw));
+    console.log('[Dynamic] tls from dynReport:', JSON.stringify(tlsFromReport));
+    console.log('[Dynamic] tlsFinal saved:', JSON.stringify(tlsFinal));
+
+    // Extract network/security findings
+    const networkSecurityIssues = dynReport.network_security || [];
+    const openRedirects = dynReport.open_redirect || [];
+    const exportedActivities = dynReport.activities || [];
+
+    // Extract API monitor data
+    const apiMonitorData = pipelineResult.apiMonitorData || null;
+    const fridaLogs = pipelineResult.fridaLogs || null;
+
+    const dynamicAnalysis = {
+      status: "completed",
+      completedAt: new Date().toISOString(),
+      wait_seconds: waitSeconds,
+      device_identifier: pipelineResult.deviceIdentifier || null,
+      // MobSFy & environment setup
+      mobsfy_applied: !!pipelineResult.mobsfyResult,
+      root_ca_installed: !!pipelineResult.rootCAResult,
+      proxy_set: !!pipelineResult.proxyResult,
+      // Runtime analysis results
+      frida_applied: !!pipelineResult.fridaResult,
+      activity_tester_exported: !!pipelineResult.activityExportedResult,
+      activity_tester_run: !!pipelineResult.activityResult,
+      tls_tests: tlsFinal,
+      // Traffic & behaviour
+      network_security_issues: Array.isArray(networkSecurityIssues) ? networkSecurityIssues.length : 0,
+      browsable_activities: Array.isArray(browsableActivities) ? browsableActivities.length : 0,
+      trackers: typeof trackers === "object" ? Object.keys(trackers).length : 0,
+      domains_count: typeof domains === "object" ? Object.keys(domains).length : 0,
+      emails_found: Array.isArray(emails) ? emails.length : 0,
+      urls_found: Array.isArray(urls) ? urls.length : 0,
+      open_redirects: Array.isArray(openRedirects) ? openRedirects.length : 0,
+      exported_activities: Array.isArray(exportedActivities) ? exportedActivities.length : 0,
+      // Raw data
+      api_monitor: apiMonitorData,
+      frida_logs: fridaLogs,
+      raw_report: dynReport,
+    };
+
+    // 5. Persist results in ES
+    await esClient.update({
+      index: indexName,
+      id: docId,
+      body: {
+        doc: {
+          dynamicAnalysis,
+          dynamicAnalysisStatus: "completed",
+          lastDynamicAnalysis: new Date().toISOString(),
+        },
+      },
+    });
+
+    console.log(`[Dynamic Analysis] Pipeline complete for ${appData.packageName}`);
+    res.json({ success: true, dynamicAnalysis, mobsfHash: md5Hash });
+  } catch (err) {
+    console.error(`[Dynamic Analysis] Pipeline failed for ${sha256}:`, err.message);
+
+    // Try to mark failure in ES
+    try {
+      const selectedDate = req.query.date || new Date().toISOString().split("T")[0];
+      const indexName = getIndexNameForDate(selectedDate);
+      const searchRes = await esClient.search({
+        index: indexName,
+        size: 1,
+        query: { term: { sha256: { value: sha256 } } },
+      });
+      if (searchRes.hits.hits.length > 0) {
+        const docId = searchRes.hits.hits[0]._id;
+        await esClient.update({
+          index: indexName,
+          id: docId,
+          body: {
+            doc: {
+              dynamicAnalysisStatus: "failed",
+              dynamicAnalysisError: err.message,
+              lastDynamicAnalysis: new Date().toISOString(),
+            },
+          },
+        });
+      }
+    } catch (_) {}
+
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /dynamic-report/:sha256 - Download dynamic analysis PDF (uses same MobSF PDF endpoint after dynamic run)
+router.get("/dynamic-report/:sha256", async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const sha256 = req.params.sha256;
+
+  try {
+    const selectedDate = req.query.date || new Date().toISOString().split("T")[0];
+    const indexName = getIndexNameForDate(selectedDate);
+
+    const searchRes = await esClient.search({
+      index: indexName,
+      size: 1,
+      query: { term: { sha256: { value: sha256 } } },
+    });
+
+    if (searchRes.hits.hits.length === 0) {
+      return res.status(404).send("App not found");
+    }
+
+    const appData = searchRes.hits.hits[0]._source;
+    const md5Hash = appData.mobsfHash;
+
+    if (!md5Hash) {
+      return res.status(400).send("No MobSF analysis available for this app");
+    }
+
+    if (!appData.dynamicAnalysis || appData.dynamicAnalysis.status !== "completed") {
+      return res.status(400).send("Dynamic analysis has not been completed for this app yet");
+    }
+
+    console.log(`[Dynamic PDF] Fetching PDF for MD5: ${md5Hash}`);
+    const pdfStream = await mobsf.getPdfReport(md5Hash);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="dynamic_report_${sha256.substring(0, 8)}.pdf"`);
+
+    pdfStream.pipe(res);
+    pdfStream.on("error", (error) => {
+      console.error(`[Dynamic PDF] Stream error:`, error);
+      if (!res.headersSent) res.status(500).send("Error generating dynamic PDF report");
+    });
+  } catch (err) {
+    console.error("[Dynamic PDF] Failed:", err.message);
+    if (!res.headersSent) res.status(500).send("Failed to get dynamic PDF report: " + err.message);
+  }
+});
+
+// GET /dynamic-results/:sha256 - View dynamic analysis results as HTML page
+router.get("/dynamic-results/:sha256", async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const sha256 = req.params.sha256;
+
+  try {
+    const selectedDate = req.query.date || new Date().toISOString().split("T")[0];
+    const indexName = getIndexNameForDate(selectedDate);
+
+    const searchRes = await esClient.search({
+      index: indexName,
+      size: 1,
+      query: { term: { sha256: { value: sha256 } } },
+    });
+
+    if (searchRes.hits.hits.length === 0) {
+      return res.status(404).send('<html><body style="background:#0a192f;color:white;font-family:Arial;text-align:center;padding:50px"><h1>App not found</h1><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
+    }
+
+    const appData = searchRes.hits.hits[0]._source;
+    const da = appData.dynamicAnalysis;
+
+    if (!da || da.status !== 'completed') {
+      return res.status(400).send('<html><body style="background:#0a192f;color:white;font-family:Arial;text-align:center;padding:50px"><h1>⚠️ Dynamic analysis not completed yet</h1><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
+    }
+
+    const raw = da.raw_report || {};
+    // TLS: check all possible locations MobSF might store it
+    const tlsRaw = da.tls_tests || raw.tls_tests || raw.tls || null;
+
+    // Normalise into a consistent {_tests:[]} or flat object
+    // MobSF formats seen:
+    //  A) Array directly: [{name, result}, ...]
+    //  B) {status, tls_tests:[{name,result},...]}  ← wrapper with nested array
+    //  C) {tests:[{name,result},...]}
+    //  D) Flat: {has_cleartext, tls_misconfigured, no_tls_pin_or_transparency, pin_or_transparency_bypassed}
+    let tls = {};
+    const mapTests = (arr) => {
+      const out = { _tests: arr };
+      for (const t of arr) {
+        const name = (t.name || t.test || '').toLowerCase();
+        if (name.includes('cleartext'))                                   out.has_cleartext = !t.result;
+        if (name.includes('misconfigur'))                                 out.tls_misconfigured = !t.result;
+        if (name.includes('bypass'))                                      out.pin_or_transparency_bypassed = !t.result;
+        if (name.includes('pinning') && !name.includes('bypass'))        out.no_tls_pin_or_transparency = !t.result;
+        if (name.includes('transparency') && !name.includes('bypass'))   out.no_tls_pin_or_transparency = !t.result;
+      }
+      return out;
+    };
+    if (Array.isArray(tlsRaw)) {
+      // Format A: direct array
+      tls = mapTests(tlsRaw);
+    } else if (tlsRaw && typeof tlsRaw === 'object') {
+      if (Array.isArray(tlsRaw.tls_tests)) {
+        // Format B: {status, tls_tests:[...]}
+        tls = mapTests(tlsRaw.tls_tests);
+      } else if (tlsRaw.tls_tests && typeof tlsRaw.tls_tests === 'object') {
+        // Format E: {status, tls_tests:{has_cleartext,...}} — flat nested
+        tls = tlsRaw.tls_tests;
+      } else if (Array.isArray(tlsRaw.tests)) {
+        // Format C: {tests:[...]}
+        tls = mapTests(tlsRaw.tests);
+      } else if ('has_cleartext' in tlsRaw || 'tls_misconfigured' in tlsRaw) {
+        // Format D: flat top-level
+        tls = tlsRaw;
+      }
+    }
+
+    // Build network activity table from raw report
+    const networkData = raw.network_data || raw.network || [];
+    const activityData = raw.activities_tested || raw.activities || [];
+    const apiCalls = da.api_monitor ? (Array.isArray(da.api_monitor) ? da.api_monitor : [da.api_monitor]) : [];
+    const fridaLogs = da.frida_logs || null;
+    const domains = raw.domains || {};
+    const urls = raw.urls || [];
+    const trackers = raw.trackers || {};
+    const openRedirects = raw.open_redirect || [];
+    const exportedExploitable = raw.exported_activities_exploitable || [];
+
+    const domainList = typeof domains === 'object' ? Object.entries(domains) : [];
+    const trackerList = typeof trackers === 'object' ? Object.keys(trackers) : [];
+
+    const statusColor = (v) => v ? '#ef4444' : '#10b981';
+    const boolBadge = (v, trueLabel = 'YES', falseLabel = 'NO') =>
+      `<span style="background:${v ? '#7f1d1d' : '#052e16'};color:${v ? '#fca5a5' : '#4ade80'};padding:2px 8px;border-radius:4px;font-size:11px;">${v ? trueLabel : falseLabel}</span>`;
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <title>Dynamic Analysis Results – ${appData.packageName || sha256}</title>
+  <meta charset="utf-8">
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#0a192f;color:#cbd5e1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:20px;min-height:100vh}
+    .container{max-width:1100px;margin:0 auto}
+    .back{display:inline-block;margin-bottom:16px;padding:7px 14px;background:#1d4ed8;color:white;text-decoration:none;border-radius:6px;font-size:13px}
+    .back:hover{background:#1e40af}
+    h1{color:#e2e8f0;font-size:22px;margin-bottom:4px}
+    .subtitle{color:#64748b;font-size:13px;margin-bottom:20px}
+    .section{background:#112240;border:1px solid #1e3a5f;border-radius:8px;padding:16px;margin-bottom:16px}
+    .section h2{color:#60a5fa;font-size:14px;font-weight:600;margin-bottom:12px;text-transform:uppercase;letter-spacing:.05em}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
+    .card{background:#0a192f;border:1px solid #1e293b;border-radius:6px;padding:12px;text-align:center}
+    .card-label{font-size:11px;color:#64748b;text-transform:uppercase;margin-bottom:6px}
+    .card-val{font-size:22px;font-weight:700;color:#60a5fa}
+    .card-val.red{color:#ef4444}
+    .card-val.green{color:#10b981}
+    .card-val.yellow{color:#f59e0b}
+    table{width:100%;border-collapse:collapse;font-size:12px}
+    th{background:#0d2137;color:#94a3b8;padding:8px;text-align:left;font-weight:600;border-bottom:1px solid #1e293b}
+    td{padding:7px 8px;border-bottom:1px solid #0d2137;vertical-align:top;word-break:break-all}
+    tr:hover td{background:rgba(30,58,95,0.3)}
+    .badge{padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600}
+    .badge-red{background:#7f1d1d;color:#fca5a5}
+    .badge-green{background:#052e16;color:#4ade80}
+    .badge-yellow{background:#451a03;color:#fcd34d}
+    .badge-blue{background:#1e3a8a;color:#93c5fd}
+    .empty{color:#475569;font-size:12px;padding:8px 0}
+    .dl-btn{display:inline-block;margin-top:12px;padding:8px 18px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-size:13px;border:none;cursor:pointer}
+    .dl-btn:hover{background:#1d4ed8}
+    pre{background:#0d2137;padding:10px;border-radius:4px;font-size:11px;overflow-x:auto;max-height:200px;overflow-y:auto;color:#94a3b8}
+  </style>
+</head>
+<body>
+<div class="container">
+  <a class="back" href="/uploadapp/apps?date=${selectedDate}">← Back to Apps</a>
+  <h1>🔍 Dynamic Analysis Results</h1>
+  <p class="subtitle">${appData.appName || 'Unknown'} &nbsp;·&nbsp; ${appData.packageName || sha256} &nbsp;·&nbsp; Completed: ${new Date(da.completedAt).toLocaleString()}</p>
+
+  <!-- Environment Setup -->
+  <div class="section">
+    <h2>⚙️ Environment Setup</h2>
+    <div class="grid">
+      <div class="card"><div class="card-label">MobSFy Applied</div><div class="card-val ${da.mobsfy_applied ? 'green' : 'yellow'}">${da.mobsfy_applied ? '✅' : '⚠️'}</div></div>
+      <div class="card"><div class="card-label">Root CA Installed</div><div class="card-val ${da.root_ca_installed ? 'green' : 'yellow'}">${da.root_ca_installed ? '✅' : '⚠️'}</div></div>
+      <div class="card"><div class="card-label">HTTPS Proxy</div><div class="card-val ${da.proxy_set ? 'green' : 'yellow'}">${da.proxy_set ? '✅ Set' : '⚠️'}</div></div>
+      <div class="card"><div class="card-label">Frida Hooks</div><div class="card-val ${da.frida_applied ? 'green' : 'yellow'}">${da.frida_applied ? '✅' : '⚠️'}</div></div>
+      <div class="card"><div class="card-label">Activity Tester</div><div class="card-val ${da.activity_tester_run ? 'green' : 'yellow'}">${da.activity_tester_run ? '✅' : '⚠️'}</div></div>
+      <div class="card"><div class="card-label">Device</div><div class="card-val" style="font-size:12px;color:#94a3b8">${da.device_identifier || 'N/A'}</div></div>
+    </div>
+  </div>
+
+  <!-- TLS/SSL Tests -->
+  <div class="section">
+    <h2>🔒 TLS / SSL Security Tests</h2>
+    ${
+      Object.keys(tls).filter(k => k !== '_tests').length === 0
+      ? '<p class="empty">TLS test data not available. Re-run dynamic analysis to capture TLS results.</p>'
+      : (() => {
+          // If we have the raw tests array, render as table
+          if (tls._tests && tls._tests.length > 0) {
+            return `<table>
+              <tr><th>Test</th><th>Result</th></tr>
+              ${tls._tests.map(t => `<tr><td>${t.name || t.test || JSON.stringify(t)}</td><td><span class="badge ${t.result ? 'badge-green' : 'badge-red'}">${t.result ? '✅ PASS' : '❌ FAIL'}</span></td></tr>`).join('')}
+            </table>`;
+          }
+          // Otherwise render as cards
+          return `<div class="grid">
+            <div class="card"><div class="card-label">TLS Misconfigured</div><div class="card-val ${tls.tls_misconfigured ? 'red' : 'green'}">${boolBadge(tls.tls_misconfigured, 'YES ⚠️', 'NO ✅')}</div></div>
+            <div class="card"><div class="card-label">No TLS Pinning</div><div class="card-val">${boolBadge(tls.no_tls_pin_or_transparency, 'Yes ⚠️', 'No ✅')}</div></div>
+            <div class="card"><div class="card-label">Pinning Bypassed</div><div class="card-val">${boolBadge(tls.pin_or_transparency_bypassed, 'Yes ⚠️', 'No ✅')}</div></div>
+            <div class="card"><div class="card-label">Cleartext Traffic</div><div class="card-val ${tls.has_cleartext ? 'red' : 'green'}">${boolBadge(tls.has_cleartext, 'YES ⚠️', 'NO ✅')}</div></div>
+          </div>`;
+        })()
+    }
+  </div>
+
+  <!-- Traffic Summary -->
+  <div class="section">
+    <h2>📊 Traffic & Behaviour Summary</h2>
+    <div class="grid">
+      <div class="card"><div class="card-label">Domains Contacted</div><div class="card-val ${da.domains_count > 0 ? 'yellow' : 'green'}">${da.domains_count || 0}</div></div>
+      <div class="card"><div class="card-label">URLs Found</div><div class="card-val">${da.urls_found || 0}</div></div>
+      <div class="card"><div class="card-label">Trackers</div><div class="card-val ${da.trackers > 0 ? 'red' : 'green'}">${da.trackers || 0}</div></div>
+      <div class="card"><div class="card-label">Network Issues</div><div class="card-val ${da.network_security_issues > 0 ? 'red' : 'green'}">${da.network_security_issues || 0}</div></div>
+      <div class="card"><div class="card-label">Open Redirects</div><div class="card-val ${da.open_redirects > 0 ? 'red' : 'green'}">${da.open_redirects || 0}</div></div>
+      <div class="card"><div class="card-label">Exported Activities</div><div class="card-val">${da.exported_activities || 0}</div></div>
+    </div>
+  </div>
+
+  <!-- Domains -->
+  ${domainList.length > 0 ? `
+  <div class="section">
+    <h2>🌍 Domains Contacted (${domainList.length})</h2>
+    <table>
+      <tr><th>Domain</th><th>Status</th><th>Geolocation</th><th>Flag</th></tr>
+      ${domainList.slice(0, 100).map(([domain, info]) => {
+        const flagged = info?.bad === true;
+        const country = info?.geolocation?.country_long || info?.country || '';
+        const status = info?.status || '';
+        return `<tr>
+          <td>${domain}</td>
+          <td><span class="badge ${flagged ? 'badge-red' : 'badge-green'}">${flagged ? '⚠️ Flagged' : '✅ Clean'}</span></td>
+          <td>${country}</td>
+          <td>${status}</td>
+        </tr>`;
+      }).join('')}
+    </table>
+  </div>` : ''}
+
+  <!-- Trackers -->
+  ${trackerList.length > 0 ? `
+  <div class="section">
+    <h2>🕵️ Trackers Detected (${trackerList.length})</h2>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      ${trackerList.map(t => `<span class="badge badge-red">${t}</span>`).join('')}
+    </div>
+  </div>` : ''}
+
+  <!-- Network Activity -->
+  ${networkData.length > 0 ? `
+  <div class="section">
+    <h2>📡 Network Activity (${networkData.length})</h2>
+    <table>
+      <tr><th>Issue / Finding</th><th>Description</th></tr>
+      ${networkData.slice(0, 50).map(n => {
+        const title = n.title || n.issue || JSON.stringify(n).substring(0,80);
+        const desc = n.description || n.details || '';
+        return `<tr><td>${title}</td><td>${desc}</td></tr>`;
+      }).join('')}
+    </table>
+  </div>` : ''}
+
+  <!-- Exported Exploitable Activities -->
+  ${exportedExploitable.length > 0 ? `
+  <div class="section">
+    <h2>⚠️ Exported / Exploitable Activities (${exportedExploitable.length})</h2>
+    <table>
+      <tr><th>Activity</th><th>Details</th></tr>
+      ${exportedExploitable.slice(0, 50).map(a => {
+        const name = typeof a === 'string' ? a : (a.activity || a.name || JSON.stringify(a).substring(0,60));
+        const det = typeof a === 'object' ? (a.details || '') : '';
+        return `<tr><td>${name}</td><td>${det}</td></tr>`;
+      }).join('')}
+    </table>
+  </div>` : ''}
+
+  <!-- Frida API Monitor -->
+  ${apiCalls.length > 0 ? `
+  <div class="section">
+    <h2>🪝 Frida API Monitor Calls</h2>
+    <pre>${JSON.stringify(apiCalls, null, 2).substring(0, 3000)}</pre>
+  </div>` : ''}
+
+  <!-- Frida Logs -->
+  ${fridaLogs ? `
+  <div class="section">
+    <h2>📝 Frida Logs</h2>
+    <pre>${typeof fridaLogs === 'string' ? fridaLogs.substring(0,3000) : JSON.stringify(fridaLogs, null, 2).substring(0,3000)}</pre>
+  </div>` : ''}
+
+  <!-- Download Button -->
+  <div style="text-align:center;margin:20px 0">
+    <a class="dl-btn" href="/uploadapp/dynamic-report/${sha256}?date=${selectedDate}">📄 Download Full Dynamic Analysis PDF</a>
+  </div>
+</div>
+</body>
+</html>`;
+
+    res.send(html);
+  } catch (err) {
+    console.error("[Dynamic Results] Error:", err.message);
+    res.status(500).send(`<html><body style="background:#0a192f;color:white;font-family:Arial;padding:40px"><h1>Error</h1><p>${err.message}</p></body></html>`);
+  }
+});
+
+// GET /dynamic-status/:sha256 - Get dynamic analysis status (for frontend polling)
+router.get("/dynamic-status/:sha256", async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const sha256 = req.params.sha256;
+
+  try {
+    const selectedDate = req.query.date || new Date().toISOString().split("T")[0];
+    const indexName = getIndexNameForDate(selectedDate);
+
+    const searchRes = await esClient.search({
+      index: indexName,
+      size: 1,
+      query: { term: { sha256: { value: sha256 } } },
+    });
+
+    if (searchRes.hits.hits.length === 0) {
+      return res.status(404).json({ error: "App not found" });
+    }
+
+    const appData = searchRes.hits.hits[0]._source;
+    res.json({
+      dynamicAnalysisStatus: appData.dynamicAnalysisStatus || "not_started",
+      dynamicAnalysis: appData.dynamicAnalysis || null,
+      lastDynamicAnalysis: appData.lastDynamicAnalysis || null,
+      hasDynamicAnalysis: !!(appData.dynamicAnalysis && appData.dynamicAnalysis.status === "completed"),
+    });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
