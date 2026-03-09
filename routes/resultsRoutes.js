@@ -29,7 +29,22 @@ function buildAppItemHTML(app) {
   const appName = app.appName || "Unknown App";
   const packageName = app.packageName || "N/A";
   const sha256 = app.sha256 || "";
-  
+
+  // Dynamic analysis
+  const da = app.dynamicAnalysis;
+  const daCompleted = da && da.status === "completed";
+  const daTrackers = da?.trackers || 0;
+  const daNetworkIssues = da?.network_security_issues || 0;
+  const daOpenRedirects = da?.open_redirects || 0;
+  const daDomains = da?.domains_count || 0;
+  const daUrls = da?.urls_found || 0;
+  const daRisk = daTrackers > 0 || daNetworkIssues > 0 || daOpenRedirects > 0;
+  const daColor = !daCompleted ? "#94a3b8" : daRisk ? "#f59e0b" : "#10b981";
+  const daLabel = !daCompleted ? "N/A" : daRisk ? "RISKY" : "CLEAN";
+  const daDetail = !daCompleted
+    ? "Not Available"
+    : `${daTrackers} trackers · ${daNetworkIssues} net issues`;
+
   const vtColor = vtStatus === "malicious" ? "#ef4444" : vtStatus === "suspicious" ? "#f59e0b" : "#10b981";
   const mobsfColor = (app.mobsfAnalysis?.security_score || 0) >= 70 ? "#10b981" : (app.mobsfAnalysis?.security_score || 0) >= 40 ? "#f59e0b" : "#ef4444";
   const mlColor = app.mlPredictionLabel === "safe" ? "#10b981" : app.mlPredictionLabel === "risky" ? "#f59e0b" : "#ef4444";
@@ -70,10 +85,11 @@ function buildAppItemHTML(app) {
           <div class="analysis-detail">${mobsfRisks} high risks</div>
         </div>
 
-        <div class="analysis-box dynamic">
+        <div class="analysis-box dynamic" ${daCompleted ? `onclick="window.location.href='/uploadapp/dynamic-results/${sha256}'" style="cursor:pointer;"` : ""}>
           <div class="analysis-label">DYNAMIC ANALYSIS</div>
-          <div class="analysis-value" style="color: #94a3b8;">N/A</div>
-          <div class="analysis-detail">Not Available</div>
+          <div class="analysis-value" style="color: ${daColor};">${daLabel}</div>
+          <div class="analysis-detail">${daDetail}</div>
+          ${daCompleted ? `<div class="analysis-detail" style="font-size:10px;margin-top:4px;color:#60a5fa;">🔍 ${daDomains} domains · ${daUrls} URLs</div>` : ""}
         </div>
 
         <div class="analysis-box ml">

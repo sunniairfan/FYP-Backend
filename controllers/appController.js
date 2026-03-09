@@ -246,12 +246,38 @@ const uploadApp = async (req, res) => {
           .filter(([_, finding]) => finding.metadata.severity === "high")
           .length;
 
+        // Count high and warning severity manifest issues (exported components, etc.)
+        const manifestFindings = Array.isArray(report.manifest_analysis?.manifest_findings)
+          ? report.manifest_analysis.manifest_findings
+          : [];
+        const highManifestIssues = manifestFindings.filter(
+          (f) => f.severity === "high" || f.severity === "error"
+        ).length;
+        const warnManifestIssues = manifestFindings.filter(
+          (f) => f.severity === "warning"
+        ).length;
+
+        // Count network security issues (cleartext traffic, etc.)
+        const networkFindings = Array.isArray(report.network_security?.network_findings)
+          ? report.network_security.network_findings
+          : [];
+        const highNetworkIssues = networkFindings.filter(
+          (f) => f.severity === "high"
+        ).length;
+
         const mobsfAnalysis = {
           security_score: report.security_score || 0,
           dangerous_permissions: dangerousPermissions,
           high_risk_findings: highRiskFindings,
           scan_type: uploadRes.scan_type || "unknown",
           file_name: uploadRes.file_name || path.basename(filePath),
+          dynamic_analysis: {
+            high_manifest_issues: highManifestIssues,
+            warn_manifest_issues: warnManifestIssues,
+            high_network_issues: highNetworkIssues,
+            total_manifest_findings: manifestFindings.length,
+            total_network_findings: networkFindings.length,
+          },
         };
 
         let mobsfStatus = "unknown";

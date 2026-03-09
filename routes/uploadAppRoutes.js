@@ -3052,10 +3052,11 @@ router.post("/dynamic-analysis/:sha256", async (req, res) => {
     const emails = dynReport.emails || [];
     const urls = dynReport.urls || [];
     // TLS: prefer dedicated call result, fallback to dynamic report JSON fields
+    // MobSF may store TLS data under several different keys depending on version
     const tlsRaw = pipelineResult.tlsResult;
     const hasTlsDirect = tlsRaw && typeof tlsRaw === 'object' && Object.keys(tlsRaw).length > 0;
-    // MobSF dynamic report JSON contains tls_tests array or individual flags
-    const tlsFromReport = dynReport.tls_tests || dynReport.ssl_tests || null;
+    const tlsFromReport = dynReport.tls_tests || dynReport.ssl_tests || dynReport.tls ||
+      dynReport.tls_data || dynReport.network_security?.tls || null;
     const tlsFinal = hasTlsDirect ? tlsRaw : (tlsFromReport || null);
     console.log('[Dynamic] tlsResult from dedicated call:', JSON.stringify(tlsRaw));
     console.log('[Dynamic] tls from dynReport:', JSON.stringify(tlsFromReport));
@@ -3221,7 +3222,8 @@ router.get("/dynamic-results/:sha256", async (req, res) => {
 
     const raw = da.raw_report || {};
     // TLS: check all possible locations MobSF might store it
-    const tlsRaw = da.tls_tests || raw.tls_tests || raw.tls || null;
+    const tlsRaw = da.tls_tests || raw.tls_tests || raw.tls || raw.tls_data ||
+      (raw.network_security?.tls) || null;
 
     // Normalise into a consistent {_tests:[]} or flat object
     // MobSF formats seen:
