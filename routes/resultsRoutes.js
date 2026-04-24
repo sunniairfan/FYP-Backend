@@ -206,6 +206,8 @@ router.get("/", requireWebAuth, async (req, res) => {
                 detectedEngines: vtResult.detectedEngines,
                 status: vtResult.status,
               };
+              console.log(`🔄 [RESULTS PAGE] VT hash check returned for ${apps[i].appName} (${vtResult.detectionRatio})`);
+              
               await esClient.update({
                 index: indexName,
                 id: result.hits.hits[i]._id,

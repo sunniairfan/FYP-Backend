@@ -7,6 +7,10 @@ const appRoutes = require("./routes/appRoutes");
 const uploadAppRoutes = require("./routes/uploadAppRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
 const resultsRoutes = require("./routes/resultsRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
+const analysisRequestRoutes = require("./routes/analysisRequestRoutes");
+const authRoutes = require("./routes/authRoutes");
+const { ensureAdminAuthIndices } = require("./utils/adminAuth");
 
 dotenv.config();
 const app = express();
@@ -28,6 +32,7 @@ app.use(cors());  // Allow cross-origin requests
 app.use(express.json()); // Parse JSON bodies
 app.use(express.urlencoded({ extended: true })); // Parse form data
 app.set("esClient", esClient); // Attach Elasticsearch client to app
+app.set("ensureAdminAuthIndices", ensureAdminAuthIndices);
 
 // Create daily Elasticsearch index name (e.g., mobile_apps_02-09-2025)
 const getIndexName = () => {
@@ -76,7 +81,9 @@ const ensureIndexExists = async (esClient) => {
             dangerousPermission17: { type: "keyword" },
             dangerousPermission18: { type: "keyword" },
             source: { type: "keyword" },
-            scanTime: { type: "date" },
+            scan_time: { type: "date", format: "epoch_millis" },
+            device_id: { type: "keyword" },
+            device_model: { type: "keyword" },
             detectionRatio: { type: "keyword" },
             totalEngines: { type: "integer" },
             detectedEngines: { type: "integer" },
@@ -104,252 +111,22 @@ app.set("ensureIndexExists", ensureIndexExists);
 // Ensure index exists and has mapping for uploadedByUser
 (async () => {
   await ensureIndexExists(esClient);
+  await ensureAdminAuthIndices(esClient);
 })();
 
-// Authentication middleware for web routes
-const requireAuth = (req, res, next) => {
-  if (req.session && req.session.authenticated) {
-    return next();
-  } else {
-    return res.redirect("/login");
-  }
-};
-
-// Authentication middleware for API routes
-const requireAuthAPI = (req, res, next) => {
-  if (req.session && req.session.authenticated) {
-    return next();
-  } else {
-    return res.status(401).json({
-      success: false,
-      error: "Authentication required",
-      message: "Please login to access this resource",
-      authenticated: false,
-      results: {
-        authenticated: false,
-        status: "authentication_required",
-        error: "Please login to access this resource",
-      },
-    });
-  }
-};
-// API route to check login status
-app.get("/api/auth/status", (req, res) => {
-  res.json({
-    success: true,
-    authenticated: !!(req.session && req.session.authenticated),
-    username: req.session?.username || null,
-    results: {
-      authenticated: !!(req.session && req.session.authenticated),
-      username: req.session?.username || null,
-      status: req.session && req.session.authenticated ? "authenticated" : "not_authenticated",
-    },
-  });
-});
-// API route for login
-app.post("/api/auth/login", (req, res) => {
-  const { username, password } = req.body;
-
-  if (username === process.env.AUTH_USERNAME && password === process.env.AUTH_PASSWORD) {
-    req.session.authenticated = true;
-    req.session.username = username;
-    res.json({
-      success: true,
-      authenticated: true,
-      username: username,
-      message: "Login successful",
-      results: {
-        authenticated: true,
-        username: username,
-        status: "login_successful",
-      },
-    });
-  } else {
-    res.status(401).json({
-      success: false,
-      authenticated: false,
-      error: "Invalid credentials",
-      message: "Invalid username or password",
-      results: {
-        authenticated: false,
-        status: "login_failed",
-        error: "Invalid credentials",
-      },
-    });
-  }
-});
-// API route for logout
-app.post("/api/auth/logout", (req, res) => {
-  req.session.destroy((err) => {
-    if (err) {
-      console.error("Session destruction error:", err);
-      res.status(500).json({
-        success: false,
-        error: "Logout failed",
-      });
-    } else {
-      res.json({
-        success: true,
-        authenticated: false,
-        message: "Logout successful",
-      });
-    }
-  });
-});
-
-// Web Login page
-app.get("/login", (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Android Malware Detection System - Login</title>
-      <style>
-        body {
-          background: #0a192f;
-          color: #60a5fa;
-          font-family: 'Courier New', monospace;
-          margin: 0;
-          padding: 0;
-          min-height: 100vh;
-          display: flex;
-          justify-content: center;
-          align-items: center;
-        }
-        .login-container {
-          background: rgba(26, 31, 58, 0.8);
-          border: 2px solid #3b82f6;
-          border-radius: 15px;
-          padding: 40px;
-          box-shadow: 0 0 30px rgba(59, 130, 246, 0.3);
-          text-align: center;
-          backdrop-filter: blur(10px);
-          max-width: 400px;
-          width: 100%;
-        }
-        .cyber-title {
-          font-size: 2.5em;
-          margin-bottom: 10px;
-          color: #60a5fa;
-          text-shadow: 0 0 20px rgba(96, 165, 250, 0.5);
-        }
-        .subtitle {
-          color: #94a3b8;
-          margin-bottom: 30px;
-          font-size: 1.1em;
-        }
-        .form-group {
-          margin-bottom: 20px;
-          text-align: left;
-        }
-        label {
-          display: block;
-          margin-bottom: 8px;
-          color: #60a5fa;
-          font-weight: bold;
-        }
-        input[type="text"], input[type="password"] {
-          width: 100%;
-          padding: 12px;
-          background: rgba(15, 23, 42, 0.8);
-          border: 2px solid #3b82f6;
-          border-radius: 8px;
-          color: #60a5fa;
-          font-size: 16px;
-          box-sizing: border-box;
-        }
-        input[type="text"]:focus, input[type="password"]:focus {
-          outline: none;
-          border-color: #60a5fa;
-          box-shadow: 0 0 10px rgba(96, 165, 250, 0.3);
-        }
-        .login-btn {
-          background: #3a3a3a;
-          color: white;
-          border: none;
-          padding: 15px 30px;
-          border-radius: 8px;
-          font-weight: bold;
-          cursor: pointer;
-          width: 100%;
-          font-size: 16px;
-          transition: all 0.3s ease;
-          box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
-        }
-        .login-btn:hover {
-          background: #3a3a3a;
-          transform: translateY(-2px);
-          box-shadow: 0 6px 20px rgba(96, 165, 250, 0.4);
-        }
-        .error {
-          color: #f87171;
-          margin-top: 15px;
-          padding: 10px;
-          background: rgba(239, 68, 68, 0.1);
-          border: 1px solid #f87171;
-          border-radius: 5px;
-        }
-        .shield-icon {
-          font-size: 3em;
-          margin-bottom: 20px;
-          color: #3b82f6;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="login-container">
-        <div class="shield-icon">🛡️</div>
-        <h1 class="cyber-title">SECURE ACCESS</h1>
-        <p class="subtitle">Android Malware Detection System</p>
-        <form method="POST" action="/login">
-          <div class="form-group">
-            <label for="username">Username:</label>
-            <input type="text" id="username" name="username" required>
-          </div>
-          <div class="form-group">
-            <label for="password">Password:</label>
-            <input type="password" id="password" name="password" required>
-          </div>
-          <button type="submit" class="login-btn">🔐 ACCESS SYSTEM</button>
-        </form>
-        ${req.query.error ? '<div class="error">⚠️ Invalid credentials. Access denied.</div>' : ""}
-      </div>
-    </body>
-    </html>
-  `);
-});
-
-// Web login form submission
-app.post("/login", (req, res) => {
-  const { username, password } = req.body;
-
-  if (username === process.env.AUTH_USERNAME && password === process.env.AUTH_PASSWORD) {
-    req.session.authenticated = true;
-    req.session.username = username;
-    res.redirect("/");
-  } else {
-    res.redirect("/login?error=1");
-  }
-});
-
-// Web Logout route
-app.get("/logout", (req, res) => {
-  req.session.destroy((err) => {
-    if (err) {
-      console.error("Session destruction error:", err);
-    }
-    res.redirect("/login");
-  });
-});
-
 // Mount routes
+app.use("/", authRoutes);
 app.use("/api/app", appRoutes); // Mobile API routes 
-app.use("/dashboard", requireAuth, dashboardRoutes); // Web dashboard routes
+app.use("/api/notifications", notificationRoutes); // Notifications API
+app.use("/api/analysis-requests", analysisRequestRoutes); // Hash-check analysis requests
+app.use("/dashboard", dashboardRoutes); // Web dashboard routes
 app.use("/uploadapp", uploadAppRoutes); // Upload app routes 
-app.use("/results", requireAuth, resultsRoutes); // Analysis results page routes
+app.use("/results", resultsRoutes); // Analysis results page routes
 
-// Main dashboard page (requires login)
-app.get("/", requireAuth, (req, res) => {
+// Main dashboard page
+app.get("/", (req, res) => {
+  const displayName = String(req.session?.user?.name || req.session?.username || "User");
+  const avatarInitial = displayName.charAt(0).toUpperCase();
   res.send(`
     <!DOCTYPE html>
     <html>
@@ -476,6 +253,110 @@ app.get("/", requireAuth, (req, res) => {
           justify-content: space-between;
           align-items: center;
           border-bottom: 1px solid #1d3557;
+        }
+        .top-actions {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+        .notification-bell {
+          position: relative;
+          background: transparent;
+          border: none;
+          color: #94a3b8;
+          cursor: pointer;
+          font-size: 18px;
+          padding: 6px 8px;
+          transition: color 0.2s;
+        }
+        .notification-bell:hover {
+          color: white;
+        }
+        .notification-badge {
+          position: absolute;
+          top: 2px;
+          right: 2px;
+          background: #ef4444;
+          color: white;
+          border-radius: 10px;
+          font-size: 10px;
+          padding: 2px 5px;
+          line-height: 1;
+          min-width: 16px;
+          text-align: center;
+          display: none;
+        }
+        .notification-panel {
+          position: absolute;
+          right: 10px;
+          top: 50px;
+          background: #0f172a;
+          border: 1px solid #1d3557;
+          border-radius: 8px;
+          width: 340px;
+          max-height: 400px;
+          overflow-y: auto;
+          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+          display: none;
+          z-index: 1001;
+        }
+        .notification-panel.show {
+          display: block;
+        }
+        .notification-item {
+          padding: 12px 14px;
+          border-bottom: 1px solid #1d3557;
+        }
+        .notification-item:last-child {
+          border-bottom: none;
+        }
+        .notification-title {
+          font-size: 13px;
+          color: #f87171;
+          font-weight: 600;
+          margin-bottom: 4px;
+        }
+        .notification-meta {
+          font-size: 11px;
+          color: #94a3b8;
+          line-height: 1.4;
+        }
+        .notification-popup {
+          position: fixed;
+          right: 20px;
+          top: 70px;
+          background: #111827;
+          border: 1px solid #ef4444;
+          border-radius: 10px;
+          padding: 14px 16px;
+          width: 320px;
+          display: none;
+          z-index: 2000;
+          box-shadow: 0 12px 28px rgba(239, 68, 68, 0.3);
+        }
+        .notification-popup.show {
+          display: block;
+        }
+        .popup-title {
+          color: #f87171;
+          font-weight: 700;
+          font-size: 14px;
+          margin-bottom: 6px;
+        }
+        .popup-body {
+          color: #e2e8f0;
+          font-size: 12px;
+          line-height: 1.5;
+        }
+        .popup-close {
+          margin-top: 10px;
+          background: #1f2937;
+          color: #e2e8f0;
+          border: 1px solid #374151;
+          border-radius: 6px;
+          padding: 6px 10px;
+          font-size: 12px;
+          cursor: pointer;
         }
         .menu-toggle {
           background: transparent;
@@ -621,10 +502,23 @@ app.get("/", requireAuth, (req, res) => {
       <div class="main-content">
         <div class="top-bar">
           <button class="menu-toggle" id="menuToggle"><i class="fas fa-bars"></i></button>
-          <div class="user-info">
-            <span>Welcome, ${req.session.username}</span>
-            <div class="user-avatar">${req.session.username.charAt(0).toUpperCase()}</div>
+          <div class="top-actions">
+            <button class="notification-bell" id="notificationBell" aria-label="Notifications">
+              <i class="fas fa-bell"></i>
+              <span class="notification-badge" id="notificationBadge">0</span>
+            </button>
+            <div class="user-info">
+            <span>Welcome, ${displayName}</span>
+            <div class="user-avatar">${avatarInitial}</div>
+            </div>
           </div>
+        </div>
+
+        <div class="notification-panel" id="notificationPanel"></div>
+        <div class="notification-popup" id="notificationPopup">
+          <div class="popup-title">High malware detection</div>
+          <div class="popup-body" id="popupBody">A high-risk app was detected. Uninstall recommended.</div>
+          <button class="popup-close" id="popupClose">Close</button>
         </div>
         
         <div class="content-area">
@@ -669,6 +563,96 @@ app.get("/", requireAuth, (req, res) => {
           sidebar.classList.remove('open');
           overlay.classList.remove('show');
         });
+
+        const notificationBell = document.getElementById('notificationBell');
+        const notificationBadge = document.getElementById('notificationBadge');
+        const notificationPanel = document.getElementById('notificationPanel');
+        const notificationPopup = document.getElementById('notificationPopup');
+        const popupBody = document.getElementById('popupBody');
+        const popupClose = document.getElementById('popupClose');
+
+        const dismissedKey = 'dismissedNotificationsHome';
+        const dismissedSet = new Set(JSON.parse(localStorage.getItem(dismissedKey) || '[]'));
+        let latestNotificationId = null;
+
+        function setBadgeCount(count) {
+          if (count > 0) {
+            notificationBadge.textContent = String(count);
+            notificationBadge.style.display = 'inline-block';
+          } else {
+            notificationBadge.style.display = 'none';
+          }
+        }
+
+        function renderNotifications(items) {
+          if (!items.length) {
+            notificationPanel.innerHTML = '<div class="notification-item"><div class="notification-meta">No notifications yet.</div></div>';
+            return;
+          }
+          notificationPanel.innerHTML = items.map((item) => {
+            const appLabel = item.appName || item.packageName || 'Unknown app';
+            const ratio = item.detectionRatio || 'N/A';
+            const when = item.createdAt ? new Date(item.createdAt).toLocaleString() : '';
+            return (
+              '<div class="notification-item">' +
+                '<div class="notification-title">' + (item.title || 'Alert') + '</div>' +
+                '<div class="notification-meta">' + appLabel + ' · ' + ratio + ' · ' + when + '</div>' +
+                '<div class="notification-meta">' + (item.message || '') + '</div>' +
+              '</div>'
+            );
+          }).join('');
+        }
+
+        function deduplicateByPackage(items) {
+          const seen = new Map();
+          return items.filter((item) => {
+            const key = item.packageName || item.sha256 || 'unknown';
+            if (seen.has(key)) {
+              return false;
+            }
+            seen.set(key, true);
+            return true;
+          });
+        }
+
+        function maybeShowPopup(items) {
+          if (!items.length) return;
+          const first = items[0];
+          latestNotificationId = first.id || null;
+          if (dismissedSet.has(first.id)) return;
+          const appLabel = first.appName || first.packageName || 'Unknown app';
+          popupBody.textContent = appLabel + ' detected by ' + (first.detectedEngines || 'many') + ' engines. Uninstall recommended.';
+          notificationPopup.classList.add('show');
+        }
+
+        async function loadNotifications() {
+          try {
+            const res = await fetch('/api/notifications?limit=10&audience=admin');
+            const data = await res.json();
+            let items = data.notifications || [];
+            items = deduplicateByPackage(items);
+            setBadgeCount(items.length > 0 ? items.length : 0);
+            renderNotifications(items);
+            maybeShowPopup(items);
+          } catch (err) {
+            console.error('Failed to load notifications', err);
+          }
+        }
+
+        notificationBell.addEventListener('click', () => {
+          notificationPanel.classList.toggle('show');
+        });
+
+        popupClose.addEventListener('click', () => {
+          notificationPopup.classList.remove('show');
+          if (latestNotificationId) {
+            dismissedSet.add(latestNotificationId);
+            localStorage.setItem(dismissedKey, JSON.stringify(Array.from(dismissedSet)));
+          }
+        });
+
+        loadNotifications();
+        setInterval(loadNotifications, 60000);
       </script>
     </body>
     </html>
@@ -678,14 +662,19 @@ app.get("/", requireAuth, (req, res) => {
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server is running on http://localhost:${PORT}`);
   console.log(`🔐 Login at: http://localhost:${PORT}/login`);
+  console.log(`📝 Signup at: http://localhost:${PORT}/signup`);
   console.log(`📊 Dashboard available at: http://localhost:${PORT}/dashboard`);
   console.log(`📱 Upload manager at: http://localhost:${PORT}/uploadapp/apps`);
   console.log(`🔌 API endpoints:`);
   console.log(`   - Auth Status: http://localhost:${PORT}/api/auth/status`);
   console.log(`   - API Login: http://localhost:${PORT}/api/auth/login`);
   console.log(`   - API Logout: http://localhost:${PORT}/api/auth/logout`);
-  console.log(`   - Mobile Upload: http://localhost:${PORT}/uploadapp/upload (No Auth Required)`);
-  console.log(`   - Mobile Scan: http://localhost:${PORT}/api/app/upload (No Auth Required)`);
+  console.log(`   - Signup Code Request: http://localhost:${PORT}/api/auth/signup/request-code`);
+  console.log(`   - Signup Code Verify: http://localhost:${PORT}/api/auth/signup/verify-code`);
+  console.log(`   - Admin Users: http://localhost:${PORT}/api/auth/admin/users`);
+  console.log(`   - Delete Account Request Code: http://localhost:${PORT}/api/auth/delete/request-code`);
+  console.log(`   - Admin Upload: http://localhost:${PORT}/uploadapp/upload`);
+  console.log(`   - App Scan: http://localhost:${PORT}/api/app/upload`);
 });
 
 

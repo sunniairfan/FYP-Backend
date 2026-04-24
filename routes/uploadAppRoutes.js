@@ -4,6 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const mobsf = require("../utils/mobsf");
 const { analyzeFileWithVirusTotal, checkVirusTotal } = require("../utils/virusTotal");
+const { createHighMalwareNotification } = require("../utils/notifications");
 const { calculateWeightedRiskScore } = require("../utils/riskAlgorithm");
 const router = express.Router();
 
@@ -302,6 +303,15 @@ async function analyzeAppWithVirusTotal(sha256, esClient) {
         },
       },
     });
+
+    createHighMalwareNotification(esClient, {
+      appName: appData.appName,
+      packageName: appData.packageName,
+      sha256: appData.sha256,
+      detectionRatio: vtResult.detectionRatio,
+      totalEngines: vtResult.totalEngines,
+      detectedEngines: vtResult.detectedEngines,
+    }).catch((err) => console.error("Notification error:", err.message));
 
     console.log(`[VirusTotal Analysis] Database updated successfully for ${appData.packageName}`);
 

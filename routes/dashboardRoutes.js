@@ -69,6 +69,10 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
         totalEngines: virusTotalData.totalEngines || 'N/A',
         detectedEngines: virusTotalData.detectedEngines || 'N/A',
         scanTime: virusTotalData.scanTime || app.scanTime || null,
+        // Device information
+        scan_time: app.scan_time || null,
+        device_id: app.device_id || null,
+        device_model: app.device_model || null,
         // Map ML Prediction data
         mlPredictionScore: mlPredictionData.mlPredictionScore,
         mlPredictionLabel: mlPredictionData.mlPredictionLabel,
@@ -312,6 +316,125 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
             justify-content: space-between;
             align-items: center;
             border-bottom: 1px solid #1d3557;
+        }
+
+        .top-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .notification-bell {
+            position: relative;
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            cursor: pointer;
+            font-size: 18px;
+            padding: 6px 8px;
+            transition: color 0.2s;
+        }
+
+        .notification-bell:hover {
+            color: white;
+        }
+
+        .notification-badge {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            background: #ef4444;
+            color: white;
+            border-radius: 10px;
+            font-size: 10px;
+            padding: 2px 5px;
+            line-height: 1;
+            min-width: 16px;
+            text-align: center;
+            display: none;
+        }
+
+        .notification-panel {
+            position: absolute;
+            right: 10px;
+            top: 50px;
+            background: #0f172a;
+            border: 1px solid #1d3557;
+            border-radius: 8px;
+            width: 340px;
+            max-height: 400px;
+            overflow-y: auto;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+            display: none;
+            z-index: 1001;
+        }
+
+        .notification-panel.show {
+            display: block;
+        }
+
+        .notification-item {
+            padding: 12px 14px;
+            border-bottom: 1px solid #1d3557;
+        }
+
+        .notification-item:last-child {
+            border-bottom: none;
+        }
+
+        .notification-title {
+            font-size: 13px;
+            color: #f87171;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .notification-meta {
+            font-size: 11px;
+            color: #94a3b8;
+            line-height: 1.4;
+        }
+
+        .notification-popup {
+            position: fixed;
+            right: 20px;
+            top: 70px;
+            background: #111827;
+            border: 1px solid #ef4444;
+            border-radius: 10px;
+            padding: 14px 16px;
+            width: 320px;
+            display: none;
+            z-index: 2000;
+            box-shadow: 0 12px 28px rgba(239, 68, 68, 0.3);
+        }
+
+        .notification-popup.show {
+            display: block;
+        }
+
+        .popup-title {
+            color: #f87171;
+            font-weight: 700;
+            font-size: 14px;
+            margin-bottom: 6px;
+        }
+
+        .popup-body {
+            color: #e2e8f0;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        .popup-close {
+            margin-top: 10px;
+            background: #1f2937;
+            color: #e2e8f0;
+            border: 1px solid #374151;
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-size: 12px;
+            cursor: pointer;
         }
 
         .user-info {
@@ -851,10 +974,23 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
             <button class="menu-btn" id="menuBtn">
                 <i class="fas fa-bars"></i>
             </button>
-            <div class="user-info">
-                <div class="user-avatar">${username.charAt(0).toUpperCase()}</div>
-                <span>${username}</span>
+            <div class="top-actions">
+                <button class="notification-bell" id="notificationBell" aria-label="Notifications">
+                    <i class="fas fa-bell"></i>
+                    <span class="notification-badge" id="notificationBadge">0</span>
+                </button>
+                <div class="user-info">
+                    <div class="user-avatar">${username.charAt(0).toUpperCase()}</div>
+                    <span>${username}</span>
+                </div>
             </div>
+        </div>
+
+        <div class="notification-panel" id="notificationPanel"></div>
+        <div class="notification-popup" id="notificationPopup">
+            <div class="popup-title">High malware detection</div>
+            <div class="popup-body" id="popupBody">A high-risk app was detected. Uninstall recommended.</div>
+            <button class="popup-close" id="popupClose">Close</button>
         </div>
 
         <div class="container">
@@ -1041,6 +1177,96 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
             overlay.classList.remove('active');
             mainContent.classList.remove('shifted');
         });
+
+        const notificationBell = document.getElementById('notificationBell');
+        const notificationBadge = document.getElementById('notificationBadge');
+        const notificationPanel = document.getElementById('notificationPanel');
+        const notificationPopup = document.getElementById('notificationPopup');
+        const popupBody = document.getElementById('popupBody');
+        const popupClose = document.getElementById('popupClose');
+
+        const dismissedKey = 'dismissedNotifications';
+        const dismissedSet = new Set(JSON.parse(localStorage.getItem(dismissedKey) || '[]'));
+        let latestNotificationId = null;
+
+        function setBadgeCount(count) {
+            if (count > 0) {
+                notificationBadge.textContent = String(count);
+                notificationBadge.style.display = 'inline-block';
+            } else {
+                notificationBadge.style.display = 'none';
+            }
+        }
+
+        function renderNotifications(items) {
+            if (!items.length) {
+                notificationPanel.innerHTML = '<div class="notification-item"><div class="notification-meta">No notifications yet.</div></div>';
+                return;
+            }
+            notificationPanel.innerHTML = items.map((item) => {
+                const appLabel = item.appName || item.packageName || 'Unknown app';
+                const ratio = item.detectionRatio || 'N/A';
+                const when = item.createdAt ? new Date(item.createdAt).toLocaleString() : '';
+                return (
+                    '<div class="notification-item">' +
+                        '<div class="notification-title">' + (item.title || 'Alert') + '</div>' +
+                        '<div class="notification-meta">' + appLabel + ' · ' + ratio + ' · ' + when + '</div>' +
+                        '<div class="notification-meta">' + (item.message || '') + '</div>' +
+                    '</div>'
+                );
+            }).join('');
+        }
+
+        function deduplicateByPackage(items) {
+            const seen = new Map();
+            return items.filter((item) => {
+                const key = item.packageName || item.sha256 || 'unknown';
+                if (seen.has(key)) {
+                    return false;
+                }
+                seen.set(key, true);
+                return true;
+            });
+        }
+
+        function maybeShowPopup(items) {
+            if (!items.length) return;
+            const first = items[0];
+            latestNotificationId = first.id || null;
+            if (dismissedSet.has(first.id)) return;
+            const appLabel = first.appName || first.packageName || 'Unknown app';
+            popupBody.textContent = appLabel + ' detected by ' + (first.detectedEngines || 'many') + ' engines. Uninstall recommended.';
+            notificationPopup.classList.add('show');
+        }
+
+        async function loadNotifications() {
+            try {
+                const res = await fetch('/api/notifications?limit=10&audience=admin');
+                const data = await res.json();
+                let items = data.notifications || [];
+                items = deduplicateByPackage(items);
+                setBadgeCount(items.length > 0 ? items.length : 0);
+                renderNotifications(items);
+                maybeShowPopup(items);
+            } catch (err) {
+                console.error('Failed to load notifications', err);
+            }
+        }
+
+        notificationBell.addEventListener('click', () => {
+            notificationPanel.classList.toggle('show');
+        });
+
+        popupClose.addEventListener('click', () => {
+            notificationPopup.classList.remove('show');
+            if (latestNotificationId) {
+                dismissedSet.add(latestNotificationId);
+                localStorage.setItem(dismissedKey, JSON.stringify(Array.from(dismissedSet)));
+            }
+        });
+
+        loadNotifications();
+        setInterval(loadNotifications, 60000);
 
         // Filter apps by date
         document.getElementById('dateFilter').addEventListener('change', function() {

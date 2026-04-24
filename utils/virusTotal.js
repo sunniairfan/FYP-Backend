@@ -21,7 +21,8 @@ const calculateFileHash = (filePath) => {
 };
 
 // Your existing hash check function (keeping it for backward compatibility)
-const checkVirusTotal = async (sha256) => {
+// OPTIMIZED: Added timeout to prevent slow scans from blocking
+const checkVirusTotal = async (sha256, timeoutMs = 15000) => {
   if (!VIRUSTOTAL_API_KEY) {
     console.warn("⚠️ VirusTotal API key is missing.");
     return {
@@ -37,7 +38,7 @@ const checkVirusTotal = async (sha256) => {
     const url = `${VT_BASE_URL}/files/${sha256}`;
     const response = await axios.get(url, {
       headers: { "x-apikey": VIRUSTOTAL_API_KEY },
-      timeout: 30000
+      timeout: Math.min(timeoutMs, 30000) // Cap at 30s for API limits
     });
 
     const data = response.data?.data;

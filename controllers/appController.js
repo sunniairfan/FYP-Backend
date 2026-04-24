@@ -2,6 +2,11 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { checkVirusTotal, analyzeFileWithVirusTotal } = require("../utils/virusTotal");
+const { createNotification, getDetectedEnginesFromDoc } = require("../utils/notifications");
+const {
+  createAnalysisRequestFromHashCheck,
+  isAlreadyUploadedFromDoc,
+} = require("../utils/analysisRequests");
 const mobsf = require("../utils/mobsf");
 
 // Path to signature database
@@ -94,13 +99,48 @@ const uploadApp = async (req, res) => {
     }
 
     const apkFile = req.files.apk[0];
-    const metadata = JSON.parse(req.body.metadata || "{}");
-    const apps = metadata.apps || [];
+    let metadata = {};
+    let rawMetadata = req.body?.metadata;
+
+    if (!rawMetadata && req.files?.metadata?.[0]?.path) {
+      try {
+        rawMetadata = fs.readFileSync(req.files.metadata[0].path, "utf-8");
+      } catch (readErr) {
+        console.error("Failed to read metadata file:", readErr.message);
+      }
+    }
+
+    try {
+      if (typeof rawMetadata === "string") {
+        metadata = JSON.parse(rawMetadata || "{}");
+      } else if (rawMetadata && typeof rawMetadata === "object") {
+        metadata = rawMetadata;
+      }
+    } catch (parseErr) {
+      console.error("Failed to parse metadata JSON:", parseErr.message);
+    }
+
+    const apps = Array.isArray(metadata.apps)
+      ? metadata.apps
+      : Array.isArray(metadata.userApps)
+        ? metadata.userApps
+        : metadata.app
+          ? [metadata.app]
+          : metadata.packageName
+            ? [metadata]
+            : [];
+    
+    console.log(`📊 [UPLOAD] Extracted apps count: ${apps.length}, metadata keys: ${Object.keys(metadata)}`);
     
     if (apps.length === 0) {
-      console.error("No app metadata provided");
-      fs.unlinkSync(apkFile.path);
-      return res.status(400).json({ error: "No app metadata provided" });
+      console.warn("⚠️  [UPLOAD] No app metadata found, creating fallback entry from APK filename");
+      const fileName = path.parse(apkFile.originalname).name;
+      apps.push({
+        appName: fileName,
+        packageName: fileName.toLowerCase().replace(/[^\w.-]/g, "_"),
+        sizeMB: (apkFile.size / (1024 * 1024)).toFixed(2),
+        permissions: [],
+      });
     }
 
     const app = apps[0];
@@ -108,22 +148,27 @@ const uploadApp = async (req, res) => {
     const ensureIndexExists = req.app.get("ensureIndexExists") || (async () => {});
 
     const uploadedFileHash = await calculateFileHash(apkFile.path);
-    const expectedHash = app.sha256;
+    const expectedHash = app.sha256 || app.hash || app.sha256Hash;
 
-    if (uploadedFileHash.toLowerCase() !== expectedHash.toLowerCase()) {
-      console.error("File integrity check failed", {
-        expected: expectedHash,
-        actual: uploadedFileHash,
-      });
-      fs.unlinkSync(apkFile.path);
-      return res.status(400).json({
-        error: "File integrity check failed",
-        expected: expectedHash,
-        actual: uploadedFileHash,
-      });
+    if (expectedHash) {
+      if (uploadedFileHash.toLowerCase() !== expectedHash.toLowerCase()) {
+        console.error("File integrity check failed", {
+          expected: expectedHash,
+          actual: uploadedFileHash,
+        });
+        fs.unlinkSync(apkFile.path);
+        return res.status(400).json({
+          error: "File integrity check failed",
+          expected: expectedHash,
+          actual: uploadedFileHash,
+        });
+      }
+    } else {
+      console.warn("No expected hash provided in metadata; skipping integrity check.");
     }
 
-    const newFileName = `${app.packageName}_${Date.now()}.apk`;
+    const safePackageName = app.packageName || "unknown_package";
+    const newFileName = `${safePackageName}_${Date.now()}.apk`;
     const newFilePath = path.join(uploadsDir, newFileName);
     fs.renameSync(apkFile.path, newFilePath);
     console.log(`Renamed file to: ${newFilePath}`);
@@ -160,25 +205,25 @@ const uploadApp = async (req, res) => {
         },
       });
 
-      console.log(`✅ Updated existing app → ${app.packageName}: ${status}`);
+      console.log(`✅ Updated existing app → ${safePackageName}: ${status}`);
     } else {
       if (isHashMalicious(uploadedFileHash)) {
         status = "malicious";
         source = "SignatureDB";
-        console.log(`Detected malicious app via SignatureDB: ${app.packageName}`);
+        console.log(`⚠️  [UPLOAD] Detected malicious app via SignatureDB: ${safePackageName}`);
       } else {
         status = "unknown";
         source = "User Upload";
-        console.log(`New app uploaded: ${app.packageName} - awaiting manual analysis`);
+        console.log(`➕ [UPLOAD] New app uploaded: ${safePackageName}`);
       }
 
       const dangerousPermissions = separateDangerousPermissions(app.permissions || []);
 
       const docData = {
-        appName: app.appName,
-        packageName: app.packageName,
+        appName: app.appName || safePackageName,
+        packageName: safePackageName,
         sha256: uploadedFileHash,
-        sizeMB: app.sizeMB,
+        sizeMB: app.sizeMB || (apkFile.size / (1024 * 1024)).toFixed(2),
         ...dangerousPermissions,
         status: status,
         source: source,
@@ -195,7 +240,7 @@ const uploadApp = async (req, res) => {
       });
 
       docId = indexResponse._id;
-      console.log(`📤 Indexed new app → ${app.packageName} (${status})`);
+      console.log(`📤 Indexed new app → ${safePackageName} (${status})`);
     }
 
     // Trigger MobSF analysis in the background
@@ -209,7 +254,7 @@ const uploadApp = async (req, res) => {
         });
 
         if (searchRes.hits.hits.length === 0) {
-          console.error(`App not found for background MobSF analysis: ${app.packageName}`);
+          console.error(`App not found for background MobSF analysis: ${safePackageName}`);
           return;
         }
 
@@ -299,9 +344,9 @@ const uploadApp = async (req, res) => {
           },
         });
 
-        console.log(`Background MobSF analysis completed for ${app.packageName} (${uploadedFileHash})`);
+        console.log(`Background MobSF analysis completed for ${safePackageName} (${uploadedFileHash})`);
       } catch (error) {
-        console.error(`Background MobSF analysis failed for ${app.packageName}:`, error.message);
+        console.error(`Background MobSF analysis failed for ${safePackageName}:`, error.message);
         try {
           const dynamicIndex = getIndexName();
           const searchRes = await esClient.search({
@@ -330,12 +375,14 @@ const uploadApp = async (req, res) => {
       }
     }, 0);
 
+    console.log(`✅ [UPLOAD] Response sent for ${safePackageName}`);
     res.status(200).json({
-      message: "APK uploaded and queued for MobSF analysis",
+      success: true,
+      message: "APK uploaded successfully",
       app: {
         id: docId,
-        packageName: app.packageName,
-        appName: app.appName,
+        packageName: safePackageName,
+        appName: app.appName || safePackageName,
         status: status,
         source: source,
         fileName: newFileName,
@@ -343,22 +390,28 @@ const uploadApp = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("❌ Error processing APK upload:", err.message, err.stack);
+    console.error("❌ [UPLOAD] Error processing APK upload:", err.message, err.stack);
     if (req.files && req.files.apk && req.files.apk[0] && fs.existsSync(req.files.apk[0].path)) {
       fs.unlinkSync(req.files.apk[0].path);
-      console.log(`Cleaned up failed APK file: ${req.files.apk[0].path}`);
+      console.log(`🗑️  [UPLOAD] Cleaned up failed APK file: ${req.files.apk[0].path}`);
     }
     res.status(500).json({
+      success: false,
       error: "Failed to process APK upload",
       details: err.message,
     });
   }
 };
 
-// Controller to handle app scan requests
+// Controller to handle app scan requests - OPTIMIZED FOR PERFORMANCE
 const receiveAppData = async (req, res) => {
   console.log(">>> Received scan request:", new Date().toISOString());
   console.log("Request body:", req.body);
+
+  // Extract device information from request body
+  const device_model = req.body.device_model || req.body.deviceModel || null;
+  const device_id = req.body.device_id || req.body.deviceId || null;
+  const scan_time = req.body.scan_time || req.body.scanTime || null;
 
   const userApps = req.body.userApps || [];
   const systemApps = req.body.systemApps || [];
@@ -372,24 +425,36 @@ const receiveAppData = async (req, res) => {
   const userResults = [];
   const systemResults = [];
 
-  // Process user apps
-  for (const app of userApps) {
+  // OPTIMIZATION: Process apps concurrently in batches instead of sequentially
+  const processingStartTime = Date.now();
+
+  // Helper function to process a single app
+  const processApp = async (app, appType) => {
     const { appName, packageName, sha256, sizeMB, permissions } = app;
     const uploadedByUserFlag = app.uploadedByUser === true;
 
     if (!packageName || !sha256) {
-      console.error(`Missing packageName or sha256 for user app: ${packageName || "unknown"}`);
-      userResults.push({ packageName: packageName || "unknown", status: "error", error: "Missing packageName or sha256", appType: "user" });
-      continue;
+      console.error(`Missing packageName or sha256 for ${appType} app: ${packageName || "unknown"}`);
+      return { packageName: packageName || "unknown", status: "error", error: "Missing packageName or sha256", appType };
     }
 
     let status = "unknown";
     let source = "Unknown";
     let virusTotalHashCheck = null;
+    let existingDoc = null;
+    let uploadTrigger = {
+      required: false,
+      queued: false,
+      triggerType: null,
+      threshold: 30,
+      detectedEngines: 0,
+      reason: null,
+    };
 
     try {
       const ensureIndexExists = req.app.get("ensureIndexExists") || (async () => {});
       await ensureIndexExists(esClient);
+      
       const existing = await esClient.search({
         index: getIndexName(),
         size: 1,
@@ -397,15 +462,21 @@ const receiveAppData = async (req, res) => {
       });
 
       if (existing.hits.hits.length > 0) {
-        const doc = existing.hits.hits[0];
+        existingDoc = existing.hits.hits[0];
+        const doc = existingDoc;
         status = doc._source.status || "unknown";
         source = doc._source.source || "Elasticsearch";
         virusTotalHashCheck = doc._source.virusTotalHashCheck || null;
 
+        const updateDoc = { timestamp: new Date(), appType };
+        if (device_model) updateDoc.device_model = device_model;
+        if (device_id) updateDoc.device_id = device_id;
+        if (scan_time) updateDoc.scan_time = scan_time;
+
         await esClient.update({
           index: getIndexName(),
           id: doc._id,
-          body: { doc: { timestamp: new Date(), appType: "user" } },
+          body: { doc: updateDoc },
         });
 
         if (uploadedByUserFlag && !doc._source.uploadedByUser) {
@@ -416,15 +487,98 @@ const receiveAppData = async (req, res) => {
           });
         }
 
-        console.log(`✅ Already indexed → ${packageName} (User): ${status} (${source})`);
+        // For already-indexed apps, still trigger one-time notification based on stored VT data.
+        let existingDetectedEngines = getDetectedEnginesFromDoc(doc._source);
+        let existingTotalEngines =
+          doc._source?.virusTotalHashCheck?.totalEngines ||
+          doc._source?.virusTotalAnalysis?.totalEngines ||
+          0;
+        let existingDetectionRatio =
+          doc._source?.virusTotalHashCheck?.detectionRatio ||
+          doc._source?.virusTotalAnalysis?.detectionRatio ||
+          "N/A";
+
+        // If old docs don't have stored VT details, perform a hash lookup once in this flow.
+        if (!Number.isFinite(existingDetectedEngines)) {
+          const vtResult = await checkVirusTotal(sha256);
+          if (vtResult && vtResult.status !== "unknown") {
+            existingDetectedEngines = vtResult.detectedEngines;
+            existingTotalEngines = vtResult.totalEngines;
+            existingDetectionRatio = vtResult.detectionRatio;
+
+            await esClient.update({
+              index: getIndexName(),
+              id: doc._id,
+              body: {
+                doc: {
+                  status: vtResult.status,
+                  source: "VirusTotal",
+                  virusTotalHashCheck: {
+                    detectionRatio: vtResult.detectionRatio,
+                    totalEngines: vtResult.totalEngines,
+                    detectedEngines: vtResult.detectedEngines,
+                    scanTime: vtResult.scanTime,
+                  },
+                },
+              },
+            });
+          }
+        }
+
+        if (Number.isFinite(existingDetectedEngines) && existingDetectedEngines >= 1) {
+          createNotification(esClient, {
+            appName: doc._source.appName || packageName,
+            packageName,
+            sha256,
+            detectedEngines: existingDetectedEngines,
+            totalEngines: existingTotalEngines,
+            detectionRatio: existingDetectionRatio,
+          }).catch((err) => console.error("❌ Notification error:", err.message));
+
+        }
+
+        if (Number.isFinite(existingDetectedEngines) && existingDetectedEngines >= 30) {
+          const alreadyUploaded = isAlreadyUploadedFromDoc(doc._source);
+          uploadTrigger = {
+            required: !alreadyUploaded,
+            queued: false,
+            triggerType: !alreadyUploaded ? "apk_upload_request" : null,
+            threshold: 30,
+            detectedEngines: existingDetectedEngines,
+            reason: alreadyUploaded
+              ? "already_uploaded_today"
+              : "detected_30_plus",
+          };
+
+          if (!alreadyUploaded) {
+            const queued = await createAnalysisRequestFromHashCheck(esClient, {
+              appName: doc._source.appName || packageName,
+              packageName,
+              sha256,
+              detectionRatio: existingDetectionRatio,
+              totalEngines: existingTotalEngines,
+              detectedEngines: existingDetectedEngines,
+              sourceIndex: getIndexName(),
+              sourceDate: new Date().toISOString().slice(0, 10),
+              alreadyUploaded,
+            });
+
+            uploadTrigger.queued = queued;
+            if (!queued) {
+              uploadTrigger.reason = "already_triggered_or_uploaded";
+            }
+          }
+        }
+
+        console.log(`✅ Already indexed → ${packageName} (${appType}): ${status} (${source})`);
       } else {
         if (isHashMalicious(sha256)) {
           status = "malicious";
           source = "SignatureDB";
-          console.log(`Detected malicious user app via SignatureDB: ${packageName}`);
+          console.log(`Detected malicious ${appType} app via SignatureDB: ${packageName}`);
         } else {
-          // Check with VirusTotal for hash lookup
-          console.log(`🦠 Checking VirusTotal hash for user app: ${packageName}`);
+          // Check with VirusTotal for hash lookup - async, non-blocking
+          console.log(`🦠 Checking VirusTotal hash for ${appType} app: ${packageName}`);
           const vtResult = await checkVirusTotal(sha256);
           
           if (vtResult && vtResult.status !== "unknown") {
@@ -436,9 +590,47 @@ const receiveAppData = async (req, res) => {
               detectedEngines: vtResult.detectedEngines,
               scanTime: vtResult.scanTime
             };
-            console.log(`✅ VirusTotal hash check for user app ${packageName}: ${status} (${vtResult.detectionRatio})`);
+            console.log(`✅ VirusTotal hash check for ${appType} app ${packageName}: ${status} (${vtResult.detectionRatio})`);
+
+            // Send notification if engines detected (1-3: Suspicious, 4-29: Malicious, 30+: High Risk)
+            if (vtResult.detectedEngines >= 1) {
+              createNotification(esClient, {
+                appName: appName || packageName,
+                packageName,
+                sha256,
+                detectedEngines: vtResult.detectedEngines,
+                totalEngines: vtResult.totalEngines,
+                detectionRatio: vtResult.detectionRatio,
+              }).catch((err) => console.error("❌ Notification error:", err.message));
+
+            }
+
+            if (vtResult.detectedEngines >= 30) {
+              const queued = await createAnalysisRequestFromHashCheck(esClient, {
+                appName: appName || packageName,
+                packageName,
+                sha256,
+                detectionRatio: vtResult.detectionRatio,
+                totalEngines: vtResult.totalEngines,
+                detectedEngines: vtResult.detectedEngines,
+                sourceIndex: getIndexName(),
+                sourceDate: new Date().toISOString().slice(0, 10),
+                alreadyUploaded: false,
+              });
+
+              uploadTrigger = {
+                required: true,
+                queued,
+                triggerType: "apk_upload_request",
+                threshold: 30,
+                detectedEngines: vtResult.detectedEngines,
+                reason: queued
+                  ? "detected_30_plus"
+                  : "already_triggered_or_uploaded",
+              };
+            }
           } else {
-            console.log(`ℹ️  VirusTotal: Hash not found for user app ${packageName}`);
+            console.log(`ℹ️  VirusTotal: Hash not found for ${appType} app ${packageName}`);
             status = "unknown";
             source = "Unknown";
           }
@@ -457,132 +649,93 @@ const receiveAppData = async (req, res) => {
           timestamp: new Date(),
           uploadedByUser: uploadedByUserFlag,
           virusTotalHashCheck,
-          appType: "user",
+          appType,
         };
+
+        if (device_model) docData.device_model = device_model;
+        if (device_id) docData.device_id = device_id;
+        if (scan_time) docData.scan_time = scan_time;
 
         await esClient.index({
           index: getIndexName(),
           document: docData,
         });
-        console.log(`📤 Indexed (User App Scan) → ${packageName} (${status})`);
+        console.log(`📤 Indexed (${appType} App Scan) → ${packageName} (${status})`);
       }
 
-      userResults.push({ packageName, status, source, virusTotalHashCheck, appType: "user" });
+      return {
+        packageName,
+        status,
+        source,
+        virusTotalHashCheck,
+        appType,
+        uploadTrigger,
+      };
     } catch (err) {
-      console.error(`❌ Error processing user app ${packageName}:`, err.message);
-      userResults.push({ packageName, status: "error", error: err.message, appType: "user" });
+      console.error(`❌ Error processing ${appType} app ${packageName}:`, err.message);
+      return { packageName, status: "error", error: err.message, appType };
     }
-  }
+  };
 
-  // Process system apps
-  for (const app of systemApps) {
-    const { appName, packageName, sha256, sizeMB, permissions } = app;
-    const uploadedByUserFlag = app.uploadedByUser === true;
-
-    if (!packageName || !sha256) {
-      console.error(`Missing packageName or sha256 for system app: ${packageName || "unknown"}`);
-      systemResults.push({ packageName: packageName || "unknown", status: "error", error: "Missing packageName or sha256", appType: "system" });
-      continue;
-    }
-
-    let status = "unknown";
-    let source = "Unknown";
-    let virusTotalHashCheck = null;
-
-    try {
-      const ensureIndexExists = req.app.get("ensureIndexExists") || (async () => {});
-      await ensureIndexExists(esClient);
-      const existing = await esClient.search({
-        index: getIndexName(),
-        size: 1,
-        query: { term: { sha256: { value: sha256 } } },
-      });
-
-      if (existing.hits.hits.length > 0) {
-        const doc = existing.hits.hits[0];
-        status = doc._source.status || "unknown";
-        source = doc._source.source || "Elasticsearch";
-        virusTotalHashCheck = doc._source.virusTotalHashCheck || null;
-
-        await esClient.update({
-          index: getIndexName(),
-          id: doc._id,
-          body: { doc: { timestamp: new Date(), appType: "system" } },
-        });
-
-        if (uploadedByUserFlag && !doc._source.uploadedByUser) {
-          await esClient.update({
-            index: getIndexName(),
-            id: doc._id,
-            body: { doc: { uploadedByUser: true } },
+  // Process all apps concurrently in parallel batches for better performance
+  const batchSize = 5; // Process 5 apps at a time
+  
+  const processAppsInBatches = async (apps, appType) => {
+    const results = [];
+    for (let i = 0; i < apps.length; i += batchSize) {
+      const batch = apps.slice(i, i + batchSize);
+      const batchResults = await Promise.allSettled(
+        batch.map(app => processApp(app, appType))
+      );
+      
+      batchResults.forEach((result, idx) => {
+        if (result.status === "fulfilled") {
+          results.push(result.value);
+        } else {
+          results.push({
+            packageName: batch[idx].packageName || "unknown",
+            status: "error",
+            error: result.reason?.message || "Unknown error",
+            appType
           });
         }
-
-        console.log(`✅ Already indexed → ${packageName} (System): ${status} (${source})`);
-      } else {
-        if (isHashMalicious(sha256)) {
-          status = "malicious";
-          source = "SignatureDB";
-          console.log(`Detected malicious system app via SignatureDB: ${packageName}`);
-        } else {
-          // Check with VirusTotal for hash lookup for SYSTEM APPS
-          console.log(`🦠 Checking VirusTotal hash for system app: ${packageName}`);
-          const vtResult = await checkVirusTotal(sha256);
-          
-          if (vtResult && vtResult.status !== "unknown") {
-            status = vtResult.status;
-            source = "VirusTotal";
-            virusTotalHashCheck = {
-              detectionRatio: vtResult.detectionRatio,
-              totalEngines: vtResult.totalEngines,
-              detectedEngines: vtResult.detectedEngines,
-              scanTime: vtResult.scanTime
-            };
-            console.log(`✅ VirusTotal hash check for system app ${packageName}: ${status} (${vtResult.detectionRatio})`);
-          } else {
-            console.log(`ℹ️  VirusTotal: Hash not found for system app ${packageName}`);
-            status = "unknown";
-            source = "Unknown";
-          }
-        }
-
-        const dangerousPermissions = separateDangerousPermissions(permissions || []);
-
-        const docData = {
-          appName,
-          packageName,
-          sha256,
-          sizeMB,
-          ...dangerousPermissions,
-          status,
-          source,
-          timestamp: new Date(),
-          uploadedByUser: uploadedByUserFlag,
-          virusTotalHashCheck,
-          appType: "system",
-        };
-
-        await esClient.index({
-          index: getIndexName(),
-          document: docData,
-        });
-        console.log(`📤 Indexed (System App Scan) → ${packageName} (${status})`);
-      }
-
-      systemResults.push({ packageName, status, source, virusTotalHashCheck, appType: "system" });
-    } catch (err) {
-      console.error(`❌ Error processing system app ${packageName}:`, err.message);
-      systemResults.push({ packageName, status: "error", error: err.message, appType: "system" });
+      });
     }
-  }
+    return results;
+  };
 
-  console.log("User Apps Results:", userResults);
-  console.log("System Apps Results:", systemResults);
-  res.status(200).json({ 
-    message: "Scan complete", 
-    userApps: userResults,
-    systemApps: systemResults
-  });
+  try {
+    // Process user and system apps concurrently
+    const [userResultsProcessing, systemResultsProcessing] = await Promise.all([
+      processAppsInBatches(userApps, "user"),
+      processAppsInBatches(systemApps, "system")
+    ]);
+
+    userResults.push(...userResultsProcessing);
+    systemResults.push(...systemResultsProcessing);
+
+    const processingTimeMs = Date.now() - processingStartTime;
+    console.log(`⏱️  Processing completed in ${processingTimeMs}ms for ${userApps.length + systemApps.length} apps`);
+    
+    console.log("User Apps Results:", userResults);
+    console.log("System Apps Results:", systemResults);
+    
+    // Return results immediately to frontend (non-blocking)
+    res.status(200).json({ 
+      message: "Scan complete", 
+      processingTimeMs,
+      userApps: userResults,
+      systemApps: systemResults
+    });
+  } catch (err) {
+    console.error("Error during app processing:", err.message);
+    res.status(500).json({
+      message: "Error processing apps",
+      error: err.message,
+      userApps: userResults,
+      systemApps: systemResults
+    });
+  }
 };
 
 const getAppDetails = async (req, res) => {
