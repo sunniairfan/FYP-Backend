@@ -277,6 +277,8 @@ const analyzeFileWithVirusTotal = async (filePath) => {
       status = "suspicious";
     }
 
+    const attrs = fileReport?.attributes || {};
+
     const result = {
       status: status,
       fileHash: fileHash,
@@ -287,7 +289,28 @@ const analyzeFileWithVirusTotal = async (filePath) => {
       detectedEngines: detectedEngines,
       maliciousCount: malicious,
       suspiciousCount: suspicious,
+      harmlessCount: harmless,
+      undetectedCount: undetected,
+      timeoutCount: timeout,
       analysisId: analysisId,
+      // Per-engine results — key=engine name, value={category, result, engine_name, engine_version, ...}
+      results: attrs.last_analysis_results || {},
+      // Extra file metadata from VT report
+      fileType: attrs.type_description || attrs.type_tag || null,
+      fileMagic: attrs.magic || null,
+      tags: attrs.tags || [],
+      names: attrs.names || [],
+      md5: attrs.md5 || null,
+      sha1: attrs.sha1 || null,
+      ssdeep: attrs.ssdeep || null,
+      reputation: attrs.reputation ?? null,
+      totalVotes: attrs.total_votes || null,
+      firstSubmitted: attrs.first_submission_date
+        ? new Date(attrs.first_submission_date * 1000).toISOString() : null,
+      lastSubmitted: attrs.last_submission_date
+        ? new Date(attrs.last_submission_date * 1000).toISOString() : null,
+      timesSubmitted: attrs.times_submitted || null,
+      popularThreat: attrs.popular_threat_classification || null,
       fullReport: fileReport
     };
     

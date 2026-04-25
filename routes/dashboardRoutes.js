@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { esClient } = require('../elasticsearch');
+const { requireAdminSession } = require('../middleware/authAccess');
 
 // Helper function to get dynamic index name
 const getIndexName = () => {
@@ -12,9 +13,9 @@ const getIndexName = () => {
 };
 
 // Dashboard route
-router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
+router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/dashboard' to '/'
   const esClient = req.app.get('esClient');
-  const username = req.session?.username || 'User';
+  const username = req.session?.user?.name || req.jwtUser?.name || 'User';
   let indexName = getIndexName();
   let currentDate = new Date().toISOString().split('T')[0];
 
@@ -1549,7 +1550,7 @@ router.get('/', async (req, res) => {  // Changed from '/dashboard' to '/'
 });
 
 // Route to delete all data from a specific index
-router.post('/delete-index', async (req, res) => {
+router.post('/delete-index', requireAdminSession, async (req, res) => {
   try {
     const indexName = getIndexName();
     
@@ -1592,7 +1593,7 @@ router.post('/delete-index', async (req, res) => {
 });
 
 // Route to delete a single app
-router.delete('/delete-app/:id', async (req, res) => {
+router.delete('/delete-app/:id', requireAdminSession, async (req, res) => {
   try {
     const appId = req.params.id;
     const indexName = getIndexName();

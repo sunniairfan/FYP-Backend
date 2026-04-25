@@ -293,11 +293,26 @@ async function analyzeAppWithVirusTotal(sha256, esClient) {
             detectedEngines: vtResult.detectedEngines,
             maliciousCount: vtResult.maliciousCount,
             suspiciousCount: vtResult.suspiciousCount,
+            harmlessCount: vtResult.harmlessCount || 0,
             undetectedCount: vtResult.undetectedCount || 0,
-            results: vtResult.results || {},
+            timeoutCount: vtResult.timeoutCount || 0,
+            engineResultsJson: vtResult.results ? JSON.stringify(vtResult.results) : null,
             scanTime: vtResult.scanTime,
             analysisId: vtResult.analysisId,
             analysisDate: new Date().toISOString(),
+            fileType: vtResult.fileType || null,
+            fileMagic: vtResult.fileMagic || null,
+            tags: vtResult.tags || [],
+            names: vtResult.names || [],
+            md5: vtResult.md5 || null,
+            sha1: vtResult.sha1 || null,
+            ssdeep: vtResult.ssdeep || null,
+            reputation: vtResult.reputation ?? null,
+            totalVotes: vtResult.totalVotes || null,
+            firstSubmitted: vtResult.firstSubmitted || null,
+            lastSubmitted: vtResult.lastSubmitted || null,
+            timesSubmitted: vtResult.timesSubmitted || null,
+            popularThreat: vtResult.popularThreat || null,
           },
           lastVirusTotalAnalysis: new Date().toISOString(),
         },
@@ -382,8 +397,8 @@ router.post(
   uploadApp
 );
 
-// Route: POST /analyze/:sha256 (Trigger MobSF analysis, no auth required)
-router.post("/analyze/:sha256", async (req, res) => {
+// Route: POST /analyze/:sha256 (Trigger MobSF analysis - requires web auth)
+router.post("/analyze/:sha256", requireWebAuth, async (req, res) => {
   const esClient = req.app.get("esClient");
   const sha256 = req.params.sha256;
   try {
@@ -395,8 +410,8 @@ router.post("/analyze/:sha256", async (req, res) => {
   }
 });
 
-// Route: POST /analyze-vt/:sha256 (Trigger VirusTotal analysis, no auth required)
-router.post("/analyze-vt/:sha256", async (req, res) => {
+// Route: POST /analyze-vt/:sha256 (Trigger VirusTotal analysis - requires web auth)
+router.post("/analyze-vt/:sha256", requireWebAuth, async (req, res) => {
   const esClient = req.app.get("esClient");
   const sha256 = req.params.sha256;
   try {
@@ -408,8 +423,8 @@ router.post("/analyze-vt/:sha256", async (req, res) => {
   }
 });
 
-// GET /report/:sha256 - Get MobSF PDF report - NO AUTH REQUIRED
-router.get("/report/:sha256", async (req, res) => {
+// GET /report/:sha256 - Get MobSF PDF report (requires web auth)
+router.get("/report/:sha256", requireWebAuth, async (req, res) => {
   const esClient = req.app.get("esClient");
   const sha256 = req.params.sha256;
   
@@ -461,8 +476,8 @@ router.get("/report/:sha256", async (req, res) => {
   }
 });
 
-// GET /mobsf/status - Check MobSF connection status - NO AUTH REQUIRED
-router.get("/mobsf/status", async (req, res) => {
+// GET /mobsf/status - Check MobSF connection status (requires web auth)
+router.get("/mobsf/status", requireWebAuth, async (req, res) => {
   const connected = await mobsf.checkConnection();
   res.json({ mobsf_connected: connected });
 });
@@ -471,13 +486,11 @@ router.get("/mobsf/status", async (req, res) => {
 router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
   const esClient = req.app.get("esClient");
   const sha256 = req.params.sha256;
-  
+
   try {
     const selectedDate = req.query.date || new Date().toISOString().split("T")[0];
     const indexName = getIndexNameForDate(selectedDate);
-    
-    console.log(`[VT Results] Looking for app ${sha256} in index: ${indexName}`);
-    
+
     const searchRes = await esClient.search({
       index: indexName,
       size: 1,
@@ -485,375 +498,404 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
     });
 
     if (searchRes.hits.hits.length === 0) {
-      return res.status(404).send(`
-        <html>
-          <head>
-            <title>App Not Found</title>
-            <style>
-              body { background: #0a192f; color: white; font-family: Arial; text-align: center; padding: 50px; }
-              .error { background: #e63946; padding: 20px; border-radius: 10px; display: inline-block; }
-              a { color: #90e0ef; text-decoration: none; }
-            </style>
-          </head>
-          <body>
-            <div class="error">
-              <h1>❌ App Not Found</h1>
-              <p>The requested app was not found in the database.</p>
-              <a href="/uploadapp/apps">← Back to Apps</a>
-            </div>
-          </body>
-        </html>
-      `);
+      return res.status(404).send('<html><body style="background:#060b14;color:white;font-family:Arial;text-align:center;padding:50px"><h1>App not found</h1><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
     }
 
     const appData = searchRes.hits.hits[0]._source;
-    const vtAnalysis = appData.virusTotalAnalysis;
+    const vt = appData.virusTotalAnalysis;
 
-    if (!vtAnalysis) {
-      return res.status(400).send(`
-        <html>
-          <head>
-            <title>No VirusTotal Analysis</title>
-            <style>
-              body { background: #0a192f; color: white; font-family: Arial; text-align: center; padding: 50px; }
-              .warning { background: #ffb703; color: #1b263b; padding: 20px; border-radius: 10px; display: inline-block; }
-              a { color: #0077b6; text-decoration: none; font-weight: bold; }
-            </style>
-          </head>
-          <body>
-            <div class="warning">
-              <h1>⚠️ No VirusTotal Analysis Available</h1>
-              <p>This app has not been analyzed with VirusTotal yet.</p>
-              <a href="/uploadapp/apps">← Back to Apps</a>
-            </div>
-          </body>
-        </html>
-      `);
+    if (!vt) {
+      return res.status(400).send('<html><body style="background:#060b14;color:white;font-family:Arial;text-align:center;padding:50px"><h1>⚠️ No VirusTotal analysis available</h1><p style="color:#94a3b8">Run VirusTotal analysis from the app details page first.</p><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
     }
 
-    // Generate HTML page with VirusTotal results
-    const html = `
-      <html>
-      <head>
-        <title>VirusTotal Results - ${appData.packageName}</title>
-        <style>
-          * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-          }
+    // ── Data extraction ──────────────────────────────────────────────────────
+    const esc = (s) => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-          body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-            background: #0a192f;
-            color: #cbd5e1;
-            min-height: 100vh;
-            padding: 20px;
-          }
+    let engineResults = {};
+    const _rawEngineData = vt.engineResultsJson || vt.results;
+    if (_rawEngineData) {
+      try { engineResults = typeof _rawEngineData === 'string' ? JSON.parse(_rawEngineData) : _rawEngineData; } catch(e) { engineResults = {}; }
+    }
+    const allEngines    = Object.entries(engineResults);
 
-          .container {
-            max-width: 1000px;
-            margin: 0 auto;
-          }
+    // Separate by verdict
+    const maliciousEngines  = allEngines.filter(([,r]) => r.category === 'malicious');
+    const suspiciousEngines = allEngines.filter(([,r]) => r.category === 'suspicious');
+    const harmlessEngines   = allEngines.filter(([,r]) => r.category === 'harmless' || r.category === 'clean');
+    const undetectedEngines = allEngines.filter(([,r]) => r.category === 'undetected');
+    const timeoutEngines    = allEngines.filter(([,r]) => r.category === 'timeout' || r.category === 'type-unsupported' || r.category === 'failure');
 
-          .back-btn {
-            display: inline-block;
-            margin-bottom: 20px;
-            padding: 8px 16px;
-            background: #2563eb;
-            color: white;
-            text-decoration: none;
-            border-radius: 6px;
-            font-size: 13px;
-            font-weight: 500;
-            transition: all 0.2s;
-          }
+    const totalEngines   = vt.totalEngines || allEngines.length || 0;
+    const malCount       = vt.maliciousCount  || maliciousEngines.length  || 0;
+    const suspCount      = vt.suspiciousCount || suspiciousEngines.length || 0;
+    const harmCount      = vt.harmlessCount   || harmlessEngines.length   || 0;
+    const undetCount     = vt.undetectedCount || undetectedEngines.length || 0;
+    const detectedCount  = malCount + suspCount;
 
-          .back-btn:hover {
-            background: #1d4ed8;
-          }
+    // Overall verdict
+    const verdict = vt.status || (malCount > 0 ? 'malicious' : suspCount > 0 ? 'suspicious' : 'safe');
+    const verdictColor  = verdict === 'malicious' ? '#ef4444' : verdict === 'suspicious' ? '#f59e0b' : '#22c55e';
+    const verdictBg     = verdict === 'malicious' ? '#450a0a' : verdict === 'suspicious' ? '#451a03' : '#052e16';
+    const verdictBorder = verdict === 'malicious' ? '#7f1d1d' : verdict === 'suspicious' ? '#92400e' : '#166534';
+    const verdictLabel  = verdict === 'malicious' ? '🔴 MALICIOUS' : verdict === 'suspicious' ? '🟡 SUSPICIOUS' : '🟢 CLEAN';
+    const verdictDesc   = verdict === 'malicious'
+      ? `${malCount} out of ${totalEngines} security engines flagged this file as malicious. It likely contains harmful code.`
+      : verdict === 'suspicious'
+      ? `${suspCount} out of ${totalEngines} engines rated this file as suspicious. It may exhibit unwanted behavior.`
+      : `No security engines flagged this file. It appears to be safe based on ${totalEngines} engine scans.`;
 
-          .header {
-            text-align: center;
-            margin-bottom: 25px;
-          }
+    // Threat classification from VT
+    const popThreat = vt.popularThreat || null;
+    const suggestedLabel = popThreat?.suggested_threat_label || null;
 
-          h1 {
-            color: #e2e8f0;
-            font-size: 24px;
-            margin: 0 0 8px 0;
-            font-weight: 600;
-          }
+    // Detection percentage for gauge
+    const detectionPct = totalEngines > 0 ? Math.round((detectedCount / totalEngines) * 100) : 0;
+    const gaugeColor = detectionPct === 0 ? '#22c55e' : detectionPct < 10 ? '#f59e0b' : '#ef4444';
 
-          .app-info {
-            color: #94a3b8;
-            font-size: 13px;
-          }
-          .back-btn {
-            display: inline-block;
-            margin: 20px 0;
-            padding: 8px 16px;
-            background: #2563eb;
-            color: white;
-            text-decoration: none;
-            border-radius: 6px;
-            font-size: 13px;
-            font-weight: 500;
-            transition: all 0.2s;
-          }
-          .back-btn:hover {
-            background: #1d4ed8;
-          }
-          .summary-card {
-            background: #112240;
-            border: 1px solid #1d3557;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-          }
-          .summary-title {
-            font-size: 15px;
-            font-weight: 600;
-            margin-bottom: 15px;
-            color: #e2e8f0;
-          }
-          .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-top: 20px;
-          }
-          .stat-box {
-            background: #112240;
-            border: 1px solid #2a2a2a;
-            padding: 15px;
-            border-radius: 6px;
-            text-align: center;
-          }
-          .stat-label {
-            color: #94a3b8;
-            font-size: 11px;
-            margin-bottom: 8px;
-            text-transform: uppercase;
-            font-weight: 500;
-          }
-          .stat-value {
-            font-size: 22px;
-            font-weight: bold;
-            color: #60a5fa;
-          }
-          .stat-value.malicious {
-            color: #ef4444;
-          }
-          .stat-value.suspicious {
-            color: #ef4444;
-          }
-          .stat-value.safe {
-            color: #10b981;
-          }
-          .status-badge {
-            display: inline-block;
-            padding: 8px 16px;
-            border-radius: 6px;
-            font-size: 13px;
-            font-weight: 700;
-            margin: 15px 0;
-            text-transform: uppercase;
-          }
-          .status-badge.safe {
-            background: rgba(16, 185, 129, 0.2);
-            color: #10b981;
-            border: 1px solid #10b981;
-          }
-          .status-badge.malicious {
-            background: rgba(239, 68, 68, 0.2);
-            color: #ef4444;
-            border: 1px solid #ef4444;
-          }
-          .status-badge.suspicious {
-            background: rgba(239, 68, 68, 0.2);
-            color: #ef4444;
-            border: 1px solid #ef4444;
-          }
-          .detections-table {
-            width: 100%;
-            border-collapse: separate;
-            border-spacing: 0;
-            border-radius: 12px;
-            overflow: hidden;
-            margin-top: 20px;
-          }
-          .detections-table th {
-            background: #1d3557;
-            padding: 15px;
-            text-align: left;
-            font-weight: bold;
-          }
-          .detections-table td {
-            background: #1b263b;
-            padding: 12px 15px;
-            border-bottom: 1px solid #415a77;
-          }
-          .detections-table tr:last-child td {
-            border-bottom: none;
-          }
-          .detections-table tr:hover td {
-            background: #273b54;
-          }
-          .engine-name {
-            font-weight: 600;
-            color: #90e0ef;
-          }
-          .result-detected {
-            color: #e63946;
-            font-weight: bold;
-          }
-          .result-clean {
-            color: #52b788;
-          }
-          .info-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 10px 0;
-            border-bottom: 1px solid #1d3557;
-            gap: 15px;
-          }
-          .info-row:last-child {
-            border-bottom: none;
-          }
-          .info-label {
-            color: #94a3b8;
-            font-weight: 500;
-            font-size: 12px;
-            min-width: 120px;
-          }
-          .info-value {
-            color: #cbd5e1;
-            font-family: 'Courier New', monospace;
-            word-break: break-all;
-            font-size: 11px;
-            text-align: right;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <a href="/uploadapp/apps" class="back-btn">← Back to Apps</a>
-          
-          <div class="header">
-            <h1>VirusTotal Analysis Results</h1>
-            <div class="app-info">
-              <strong>${appData.appName || 'Unknown App'}</strong><br>
-              ${appData.packageName}
-            </div>
-          </div>
+    // Collect unique threat names from detected engines
+    const threatNames = [...new Set(
+      [...maliciousEngines, ...suspiciousEngines]
+        .map(([,r]) => r.result)
+        .filter(Boolean)
+    )];
 
-          <div class="summary-card">
-            <div class="summary-title">Detection Summary</div>
-            
-            <div style="text-align: center;">
-              <div class="status-badge ${vtAnalysis.status}">
-                ${vtAnalysis.status === 'malicious' ? 'MALICIOUS' : 
-                  vtAnalysis.status === 'suspicious' ? 'SUSPICIOUS' : 
-                  'SAFE'}
-              </div>
-            </div>
+    const scanDate = vt.scanTime ? new Date(vt.scanTime).toLocaleString() : 'N/A';
+    const vtLink = `https://www.virustotal.com/gui/file/${sha256}`;
 
-            <div class="stats-grid">
-              <div class="stat-box">
-                <div class="stat-label">Detection Ratio</div>
-                <div class="stat-value">${vtAnalysis.detectionRatio || 'N/A'}</div>
-              </div>
-              <div class="stat-box">
-                <div class="stat-label">Malicious</div>
-                <div class="stat-value malicious">${vtAnalysis.maliciousCount || 0}</div>
-              </div>
-              <div class="stat-box">
-                <div class="stat-label">Suspicious</div>
-                <div class="stat-value suspicious">${vtAnalysis.suspiciousCount || 0}</div>
-              </div>
-              <div class="stat-box">
-                <div class="stat-label">Undetected</div>
-                <div class="stat-value safe">${vtAnalysis.undetectedCount || 0}</div>
-              </div>
-            </div>
-          </div>
+    // Helper to build engine row HTML
+    const engineRow = ([engine, r], idx) => {
+      const cat = r.category || 'undetected';
+      const threat = r.result || '';
+      const ver = r.engine_version || '';
+      const update = r.engine_update || '';
+      const isDetected = cat === 'malicious' || cat === 'suspicious';
+      const catColor = cat === 'malicious' ? '#fca5a5' : cat === 'suspicious' ? '#fcd34d' : cat === 'harmless' || cat === 'clean' ? '#4ade80' : '#64748b';
+      const catBg    = cat === 'malicious' ? '#450a0a' : cat === 'suspicious' ? '#451a03' : cat === 'harmless' || cat === 'clean' ? '#052e16' : '#1e293b';
+      const rowBg    = isDetected ? 'rgba(239,68,68,0.05)' : '';
+      return `<tr style="background:${rowBg}">
+        <td style="font-weight:${isDetected?'600':'400'};color:${isDetected?'#f1f5f9':'#94a3b8'}">${esc(engine)}</td>
+        <td><span style="background:${catBg};color:${catColor};padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600">${cat.toUpperCase()}</span></td>
+        <td style="color:${isDetected?'#fca5a5':'#475569'};font-size:11px">${esc(threat) || (cat==='undetected'?'—':'Clean')}</td>
+        <td style="color:#475569;font-size:10px;font-family:monospace">${esc(ver)}</td>
+        <td style="color:#334155;font-size:10px">${esc(update)}</td>
+      </tr>`;
+    };
 
-          <div class="summary-card">
-            <div class="summary-title">File Information</div>
-            <div class="info-row">
-              <span class="info-label">SHA-256:</span>
-              <span class="info-value">${appData.sha256 || 'N/A'}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">File Size:</span>
-              <span class="info-value">${appData.sizeMB?.toFixed(2) || 0} MB</span>
-            </div>
-          </div>
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>VirusTotal — ${esc(appData.appName || appData.packageName)}</title>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{background:#060b14;color:#cbd5e1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;padding:20px 16px}
+    a{color:#3b82f6;text-decoration:none}a:hover{text-decoration:underline}
+    .wrap{max-width:1100px;margin:0 auto}
+    .topbar{display:flex;align-items:center;gap:12px;margin-bottom:22px;flex-wrap:wrap}
+    .back-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;background:#1e293b;border:1px solid #334155;color:#94a3b8;border-radius:8px;font-size:13px;font-weight:500;transition:background .2s}
+    .back-btn:hover{background:#263248;color:#e2e8f0;text-decoration:none}
+    .page-title{font-size:20px;font-weight:700;color:#f1f5f9}
+    .page-sub{font-size:12px;color:#64748b;margin-top:3px}
+    /* Cards */
+    .card{background:#0f172a;border:1px solid #1e293b;border-radius:12px;padding:18px 20px;margin-bottom:14px;overflow:hidden}
+    .card-hdr{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid #1e293b}
+    .card-icon{font-size:18px;width:32px;height:32px;background:#0f2040;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+    .card-title{font-size:13px;font-weight:600;color:#e2e8f0;text-transform:uppercase;letter-spacing:.05em}
+    .card-sub{margin-left:auto;font-size:11px;color:#64748b}
+    /* Verdict banner */
+    .verdict-banner{border-radius:12px;padding:22px 24px;margin-bottom:14px;display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+    .verdict-label{font-size:28px;font-weight:800;letter-spacing:.05em}
+    .verdict-desc{font-size:13px;line-height:1.6;flex:1}
+    /* Stats grid */
+    .stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+    .stat-card{background:#060b14;border:1px solid #1e293b;border-radius:10px;padding:14px;text-align:center}
+    .stat-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
+    .stat-val{font-size:26px;font-weight:700;line-height:1}
+    .sv-red{color:#ef4444}.sv-yellow{color:#f59e0b}.sv-green{color:#22c55e}.sv-blue{color:#3b82f6}.sv-gray{color:#94a3b8}
+    /* Detection gauge */
+    .gauge-wrap{display:flex;align-items:center;gap:16px;margin-bottom:12px}
+    .gauge-bar-bg{flex:1;height:12px;background:#1e293b;border-radius:99px;overflow:hidden}
+    .gauge-bar-fill{height:100%;border-radius:99px;transition:width .4s}
+    .gauge-pct{font-size:22px;font-weight:700;min-width:56px;text-align:right}
+    /* Tables */
+    .tbl-wrap{overflow-x:auto}
+    table{width:100%;border-collapse:collapse;font-size:12px}
+    th{background:#070d1a;color:#94a3b8;padding:9px 10px;text-align:left;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #1e293b}
+    td{padding:8px 10px;border-bottom:1px solid #0d1a2e;vertical-align:top}
+    tr:last-child td{border-bottom:none}
+    tr:hover td{background:rgba(30,58,100,.2)}
+    /* Info rows */
+    .info-row{display:flex;justify-content:space-between;align-items:flex-start;padding:8px 0;border-bottom:1px solid #0d1a2e;gap:12px}
+    .info-row:last-child{border-bottom:none}
+    .info-lbl{font-size:11px;color:#64748b;font-weight:500;min-width:140px;flex-shrink:0}
+    .info-val{font-size:11px;color:#cbd5e1;word-break:break-all;text-align:right;font-family:monospace}
+    /* Threat chips */
+    .chip-list{display:flex;flex-wrap:wrap;gap:6px}
+    .chip{padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600}
+    .chip-red{background:#450a0a;color:#fca5a5;border:1px solid #7f1d1d}
+    .chip-yellow{background:#451a03;color:#fcd34d;border:1px solid #92400e}
+    .chip-gray{background:#1e293b;color:#94a3b8;border:1px solid #334155}
+    /* Sections for detected/all toggle */
+    .tab-bar{display:flex;gap:8px;margin-bottom:12px}
+    .tab{padding:6px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid #334155;background:#1e293b;color:#94a3b8;transition:.15s}
+    .tab.active{background:#1d4ed8;color:#fff;border-color:#1d4ed8}
+    .engine-section{display:none}.engine-section.active{display:block}
+    /* Collapsible */
+    details summary{cursor:pointer;font-size:12px;color:#64748b;user-select:none;padding:4px 0}
+    details summary:hover{color:#94a3b8}
+    details[open] summary{margin-bottom:8px}
+    .vt-ext-link{display:inline-flex;align-items:center;gap:6px;padding:9px 18px;background:linear-gradient(135deg,#1a56db,#1d4ed8);color:#fff;border-radius:8px;font-size:13px;font-weight:600}
+    .vt-ext-link:hover{opacity:.88;text-decoration:none}
+    @media(max-width:600px){.stats-grid{grid-template-columns:repeat(2,1fr)}.verdict-banner{flex-direction:column}}
+  </style>
+</head>
+<body>
+<div class="wrap">
 
-          ${vtAnalysis.results && Object.keys(vtAnalysis.results).length > 0 ? `
-            <div class="summary-card">
-              <div class="summary-title">Detection Details (${Object.keys(vtAnalysis.results).length} Engines)</div>
-              <table class="detections-table">
-                <thead>
-                  <tr>
-                    <th>Antivirus Engine</th>
-                    <th>Category</th>
-                    <th>Result</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${Object.entries(vtAnalysis.results)
-                    .sort((a, b) => {
-                      // Sort: detected first, then by engine name
-                      if (a[1].category === 'malicious' && b[1].category !== 'malicious') return -1;
-                      if (b[1].category === 'malicious' && a[1].category !== 'malicious') return 1;
-                      if (a[1].category === 'suspicious' && b[1].category !== 'suspicious') return -1;
-                      if (b[1].category === 'suspicious' && a[1].category !== 'suspicious') return 1;
-                      return a[0].localeCompare(b[0]);
-                    })
-                    .map(([engine, result]) => `
-                      <tr>
-                        <td class="engine-name">${engine}</td>
-                        <td>${result.category || 'undetected'}</td>
-                        <td class="${result.category === 'undetected' ? 'result-clean' : 'result-detected'}">
-                          ${result.result || 'Clean'}
-                        </td>
-                      </tr>
-                    `).join('')}
-                </tbody>
-              </table>
-            </div>
-          ` : ''}
-        </div>
-      </body>
-      </html>
-    `;
+  <div class="topbar">
+    <a class="back-btn" href="/uploadapp/apps?date=${selectedDate}">← Back to Apps</a>
+    <div>
+      <div class="page-title">🛡️ VirusTotal Multi-Engine Analysis</div>
+      <div class="page-sub">${esc(appData.appName || 'Unknown')} &nbsp;·&nbsp; ${esc(appData.packageName || sha256)} &nbsp;·&nbsp; Scanned: ${scanDate}</div>
+    </div>
+  </div>
+
+  <!-- ── 1. Verdict Banner ──────────────────────────────────────── -->
+  <div class="verdict-banner" style="background:${verdictBg};border:1px solid ${verdictBorder}">
+    <div>
+      <div class="verdict-label" style="color:${verdictColor}">${verdictLabel}</div>
+      <div style="font-size:12px;color:#64748b;margin-top:4px">Overall Verdict</div>
+    </div>
+    <div class="verdict-desc" style="color:#94a3b8">${verdictDesc}</div>
+    ${suggestedLabel ? `<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px 14px;font-size:12px"><div style="color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Suggested Threat Label</div><div style="color:#fcd34d;font-weight:600">${esc(suggestedLabel)}</div></div>` : ''}
+  </div>
+
+  <!-- ── 2. Detection Stats ─────────────────────────────────────── -->
+  <div class="card">
+    <div class="card-hdr">
+      <div class="card-icon">📊</div>
+      <div class="card-title">Detection Statistics</div>
+      <div class="card-sub">${totalEngines} engines scanned</div>
+    </div>
+
+    <div class="gauge-wrap" style="margin-bottom:16px">
+      <div style="font-size:12px;color:#64748b;min-width:110px">Detection Rate</div>
+      <div class="gauge-bar-bg">
+        <div class="gauge-bar-fill" style="width:${detectionPct}%;background:${gaugeColor}"></div>
+      </div>
+      <div class="gauge-pct" style="color:${gaugeColor}">${detectionPct}%</div>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Detection Ratio</div>
+        <div class="stat-val sv-blue" style="font-size:22px">${vt.detectionRatio || `${detectedCount}/${totalEngines}`}</div>
+        <div style="font-size:10px;color:#64748b;margin-top:4px">engines detected</div>
+      </div>
+      <div class="stat-card" style="border-color:${malCount>0?'#7f1d1d':'#1e293b'}">
+        <div class="stat-label">Malicious</div>
+        <div class="stat-val ${malCount>0?'sv-red':'sv-gray'}">${malCount}</div>
+        <div style="font-size:10px;color:#64748b;margin-top:4px">confirmed threat</div>
+      </div>
+      <div class="stat-card" style="border-color:${suspCount>0?'#92400e':'#1e293b'}">
+        <div class="stat-label">Suspicious</div>
+        <div class="stat-val ${suspCount>0?'sv-yellow':'sv-gray'}">${suspCount}</div>
+        <div style="font-size:10px;color:#64748b;margin-top:4px">possible threat</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Clean / Harmless</div>
+        <div class="stat-val sv-green">${harmCount}</div>
+        <div style="font-size:10px;color:#64748b;margin-top:4px">no threat found</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Undetected</div>
+        <div class="stat-val sv-gray">${undetCount}</div>
+        <div style="font-size:10px;color:#64748b;margin-top:4px">no signature match</div>
+      </div>
+      ${(vt.timeoutCount || 0) > 0 ? `
+      <div class="stat-card">
+        <div class="stat-label">Timeout / Error</div>
+        <div class="stat-val sv-gray">${vt.timeoutCount}</div>
+        <div style="font-size:10px;color:#64748b;margin-top:4px">scan incomplete</div>
+      </div>` : ''}
+    </div>
+  </div>
+
+  <!-- ── 3. Detected By (Names) ─────────────────────────────────── -->
+  ${(maliciousEngines.length + suspiciousEngines.length) > 0 ? `
+  <div class="card">
+    <div class="card-hdr">
+      <div class="card-icon">⚠️</div>
+      <div class="card-title">Flagged By Engines</div>
+      <div class="card-sub">${detectedCount} of ${totalEngines}</div>
+    </div>
+
+    ${maliciousEngines.length > 0 ? `
+    <div style="margin-bottom:12px">
+      <div style="font-size:11px;color:#64748b;margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">🔴 Malicious (${maliciousEngines.length})</div>
+      <div class="tbl-wrap"><table>
+        <tr><th>Engine</th><th>Threat Name / Signature</th><th>Engine Version</th></tr>
+        ${maliciousEngines.map(([engine, r]) => `<tr>
+          <td style="font-weight:600;color:#fca5a5">${esc(engine)}</td>
+          <td style="color:#f87171;font-style:${r.result?'normal':'italic'}">${esc(r.result) || 'Detected (no name)'}</td>
+          <td style="font-family:monospace;font-size:10px;color:#475569">${esc(r.engine_version || '—')}</td>
+        </tr>`).join('')}
+      </table></div>
+    </div>` : ''}
+
+    ${suspiciousEngines.length > 0 ? `
+    <div>
+      <div style="font-size:11px;color:#64748b;margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">🟡 Suspicious (${suspiciousEngines.length})</div>
+      <div class="tbl-wrap"><table>
+        <tr><th>Engine</th><th>Reason / Signature</th><th>Engine Version</th></tr>
+        ${suspiciousEngines.map(([engine, r]) => `<tr>
+          <td style="font-weight:600;color:#fcd34d">${esc(engine)}</td>
+          <td style="color:#fbbf24">${esc(r.result) || 'Flagged as suspicious'}</td>
+          <td style="font-family:monospace;font-size:10px;color:#475569">${esc(r.engine_version || '—')}</td>
+        </tr>`).join('')}
+      </table></div>
+    </div>` : ''}
+  </div>` : ''}
+
+  <!-- ── 4. Threat Names Summary ────────────────────────────────── -->
+  ${threatNames.length > 0 ? `
+  <div class="card">
+    <div class="card-hdr">
+      <div class="card-icon">🏷️</div>
+      <div class="card-title">Threat Signatures Identified</div>
+    </div>
+    <p style="font-size:11px;color:#64748b;margin-bottom:10px">These are the malware family names / threat signatures reported by the detecting engines. Different engines may use different names for the same threat.</p>
+    <div class="chip-list">
+      ${threatNames.map(n => `<span class="chip chip-red">${esc(n)}</span>`).join('')}
+    </div>
+    ${popThreat?.popular_threat_name ? `
+    <div style="margin-top:12px">
+      <div style="font-size:11px;color:#64748b;margin-bottom:6px">Most Common Threat Name (across all engines):</div>
+      <div class="chip-list">
+        ${(Array.isArray(popThreat.popular_threat_name) ? popThreat.popular_threat_name : [popThreat.popular_threat_name])
+          .map(t => `<span class="chip chip-red">${esc(typeof t === 'object' ? t.value : t)}</span>`).join('')}
+      </div>
+    </div>` : ''}
+    ${popThreat?.popular_threat_category ? `
+    <div style="margin-top:12px">
+      <div style="font-size:11px;color:#64748b;margin-bottom:6px">Threat Categories:</div>
+      <div class="chip-list">
+        ${(Array.isArray(popThreat.popular_threat_category) ? popThreat.popular_threat_category : [popThreat.popular_threat_category])
+          .map(t => `<span class="chip chip-yellow">${esc(typeof t === 'object' ? t.value : t)}</span>`).join('')}
+      </div>
+    </div>` : ''}
+  </div>` : ''}
+
+  <!-- ── 5. Community Reputation ────────────────────────────────── -->
+  ${vt.reputation !== null && vt.reputation !== undefined ? `
+  <div class="card">
+    <div class="card-hdr">
+      <div class="card-icon">👥</div>
+      <div class="card-title">Community Reputation</div>
+    </div>
+    <div style="display:flex;gap:20px;flex-wrap:wrap">
+      <div class="stat-card" style="flex:1;min-width:120px">
+        <div class="stat-label">Reputation Score</div>
+        <div class="stat-val ${vt.reputation < 0 ? 'sv-red' : vt.reputation === 0 ? 'sv-gray' : 'sv-green'}" style="font-size:24px">${vt.reputation}</div>
+        <div style="font-size:10px;color:#64748b;margin-top:4px">${vt.reputation < -10 ? 'Strongly negative' : vt.reputation < 0 ? 'Slightly negative' : vt.reputation === 0 ? 'Neutral' : 'Positive'}</div>
+      </div>
+      ${vt.totalVotes ? `
+      <div class="stat-card" style="flex:1;min-width:120px">
+        <div class="stat-label">Community Votes — Harmless</div>
+        <div class="stat-val sv-green">${vt.totalVotes.harmless || 0}</div>
+      </div>
+      <div class="stat-card" style="flex:1;min-width:120px">
+        <div class="stat-label">Community Votes — Malicious</div>
+        <div class="stat-val sv-red">${vt.totalVotes.malicious || 0}</div>
+      </div>` : ''}
+    </div>
+    <p style="font-size:11px;color:#475569;margin-top:10px">The reputation score is derived from the votes of VirusTotal users and trusted security vendors. Negative scores indicate the community considers this file harmful.</p>
+  </div>` : ''}
+
+  <!-- ── 6. File Information ─────────────────────────────────────── -->
+  <div class="card">
+    <div class="card-hdr">
+      <div class="card-icon">📄</div>
+      <div class="card-title">File Information</div>
+    </div>
+    <div class="info-row"><span class="info-lbl">SHA-256</span><span class="info-val">${esc(appData.sha256 || sha256)}</span></div>
+    ${vt.md5   ? `<div class="info-row"><span class="info-lbl">MD5</span><span class="info-val">${esc(vt.md5)}</span></div>` : ''}
+    ${vt.sha1  ? `<div class="info-row"><span class="info-lbl">SHA-1</span><span class="info-val">${esc(vt.sha1)}</span></div>` : ''}
+    ${vt.ssdeep? `<div class="info-row"><span class="info-lbl">SSDeep (fuzzy hash)</span><span class="info-val">${esc(vt.ssdeep)}</span></div>` : ''}
+    <div class="info-row"><span class="info-lbl">File Size</span><span class="info-val">${appData.sizeMB ? appData.sizeMB.toFixed(2) + ' MB' : (appData.fileSize ? (appData.fileSize/1024/1024).toFixed(2) + ' MB' : 'N/A')}</span></div>
+    ${vt.fileType  ? `<div class="info-row"><span class="info-lbl">File Type</span><span class="info-val">${esc(vt.fileType)}</span></div>` : ''}
+    ${vt.fileMagic ? `<div class="info-row"><span class="info-lbl">Magic Bytes</span><span class="info-val">${esc(vt.fileMagic)}</span></div>` : ''}
+    ${vt.firstSubmitted ? `<div class="info-row"><span class="info-lbl">First Seen on VT</span><span class="info-val">${new Date(vt.firstSubmitted).toLocaleString()}</span></div>` : ''}
+    ${vt.lastSubmitted  ? `<div class="info-row"><span class="info-lbl">Last Submission</span><span class="info-val">${new Date(vt.lastSubmitted).toLocaleString()}</span></div>` : ''}
+    ${vt.timesSubmitted ? `<div class="info-row"><span class="info-lbl">Times Submitted</span><span class="info-val">${vt.timesSubmitted}</span></div>` : ''}
+    ${vt.names && vt.names.length > 0 ? `<div class="info-row"><span class="info-lbl">Known File Names</span><span class="info-val">${vt.names.slice(0,5).map(n => esc(n)).join(', ')}</span></div>` : ''}
+    ${vt.tags && vt.tags.length > 0 ? `<div class="info-row"><span class="info-lbl">Tags</span><span class="info-val"><div class="chip-list" style="justify-content:flex-end">${vt.tags.map(t => `<span class="chip chip-gray">${esc(t)}</span>`).join('')}</div></span></div>` : ''}
+  </div>
+
+  <!-- ── 7. All Engines Results ──────────────────────────────────── -->
+  ${allEngines.length > 0 ? `
+  <div class="card">
+    <div class="card-hdr">
+      <div class="card-icon">🔍</div>
+      <div class="card-title">All Engine Results</div>
+      <div class="card-sub">${allEngines.length} engines</div>
+    </div>
+
+    <div class="tab-bar">
+      <div class="tab active" onclick="showTab('detected',this)">⚠️ Detected (${detectedCount})</div>
+      <div class="tab" onclick="showTab('all',this)">📋 All Engines (${allEngines.length})</div>
+    </div>
+
+    <div id="tab-detected" class="engine-section active">
+      ${detectedCount === 0
+        ? '<p style="color:#22c55e;font-size:13px;padding:8px 0">✓ No engines detected any threats in this file.</p>'
+        : `<div class="tbl-wrap"><table>
+            <tr><th>Engine</th><th>Verdict</th><th>Threat Name / Signature</th><th>Version</th><th>Last Update</th></tr>
+            ${[...maliciousEngines, ...suspiciousEngines].map(engineRow).join('')}
+          </table></div>`}
+    </div>
+
+    <div id="tab-all" class="engine-section">
+      <div class="tbl-wrap"><table>
+        <tr><th>Engine</th><th>Verdict</th><th>Threat Name / Signature</th><th>Version</th><th>Last Update</th></tr>
+        ${[...maliciousEngines, ...suspiciousEngines, ...harmlessEngines, ...undetectedEngines, ...timeoutEngines].map(engineRow).join('')}
+      </table></div>
+    </div>
+  </div>` : `
+  <div class="card">
+    <div class="card-hdr"><div class="card-icon">🔍</div><div class="card-title">Engine Results</div></div>
+    <p style="font-size:12px;color:#64748b">Per-engine results are not available for this scan. This may be because the file was scanned before engine results were stored. Re-run VirusTotal analysis to get detailed per-engine data.</p>
+  </div>`}
+
+  <!-- ── External Link ──────────────────────────────────────────── -->
+  <div style="text-align:center;padding:24px 0 8px;display:flex;flex-direction:column;align-items:center;gap:12px">
+    <a class="vt-ext-link" href="${vtLink}" target="_blank" rel="noopener">
+      🔗 View Full Report on VirusTotal.com ↗
+    </a>
+    <p style="font-size:11px;color:#334155">VirusTotal is a free online service by Google that analyses files using 70+ antivirus engines and website scanners.</p>
+  </div>
+
+</div>
+
+<script>
+function showTab(id, el) {
+  document.querySelectorAll('.engine-section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + id).classList.add('active');
+  el.classList.add('active');
+}
+</script>
+</body>
+</html>`;
 
     res.send(html);
   } catch (err) {
     console.error("[VT Results] Error:", err.message);
-    res.status(500).send(`
-      <html>
-        <head>
-          <title>Error</title>
-          <style>
-            body { background: #0a192f; color: white; font-family: Arial; text-align: center; padding: 50px; }
-            .error { background: #e63946; padding: 20px; border-radius: 10px; display: inline-block; }
-            a { color: #90e0ef; text-decoration: none; }
-          </style>
-        </head>
-        <body>
-          <div class="error">
-            <h1>❌ Error</h1>
-            <p>Failed to load VirusTotal results: ${err.message}</p>
-            <a href="/uploadapp/apps">← Back to Apps</a>
-          </div>
-        </body>
-      </html>
-    `);
+    res.status(500).send(`<html><body style="background:#060b14;color:white;font-family:Arial;padding:40px"><h1>Error</h1><p>${err.message}</p><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>`);
   }
 });
+
 
 // GET /results/:sha256 - Comprehensive analysis results page - REQUIRES WEB AUTH
 router.get("/results/:sha256", requireWebAuth, async (req, res) => {
@@ -3008,7 +3050,7 @@ router.post("/run-algorithm/:sha256", requireWebAuth, async (req, res) => {
 // POST /dynamic-analysis/:sha256
 // Full automated dynamic analysis pipeline:
 //   start_analysis → frida hooks → tls_tests → wait → stop_analysis → report_json → save to ES
-router.post("/dynamic-analysis/:sha256", async (req, res) => {
+router.post("/dynamic-analysis/:sha256", requireWebAuth, async (req, res) => {
   const esClient = req.app.get("esClient");
   const sha256 = req.params.sha256;
   const waitSeconds = parseInt(req.query.wait || req.body?.wait || "45", 10);
@@ -3157,8 +3199,8 @@ router.post("/dynamic-analysis/:sha256", async (req, res) => {
   }
 });
 
-// GET /dynamic-report/:sha256 - Download dynamic analysis PDF (uses same MobSF PDF endpoint after dynamic run)
-router.get("/dynamic-report/:sha256", async (req, res) => {
+// GET /dynamic-report/:sha256 - Download dynamic analysis PDF (requires web auth)
+router.get("/dynamic-report/:sha256", requireWebAuth, async (req, res) => {
   const esClient = req.app.get("esClient");
   const sha256 = req.params.sha256;
 
@@ -3204,8 +3246,8 @@ router.get("/dynamic-report/:sha256", async (req, res) => {
   }
 });
 
-// GET /dynamic-results/:sha256 - View dynamic analysis results as HTML page
-router.get("/dynamic-results/:sha256", async (req, res) => {
+// GET /dynamic-results/:sha256 - View dynamic analysis results as HTML page (requires web auth)
+router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
   const esClient = req.app.get("esClient");
   const sha256 = req.params.sha256;
 
@@ -3220,246 +3262,417 @@ router.get("/dynamic-results/:sha256", async (req, res) => {
     });
 
     if (searchRes.hits.hits.length === 0) {
-      return res.status(404).send('<html><body style="background:#0a192f;color:white;font-family:Arial;text-align:center;padding:50px"><h1>App not found</h1><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
+      return res.status(404).send('<html><body style="background:#060b14;color:white;font-family:Arial;text-align:center;padding:50px"><h1>App not found</h1><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
     }
 
     const appData = searchRes.hits.hits[0]._source;
     const da = appData.dynamicAnalysis;
 
     if (!da || da.status !== 'completed') {
-      return res.status(400).send('<html><body style="background:#0a192f;color:white;font-family:Arial;text-align:center;padding:50px"><h1>⚠️ Dynamic analysis not completed yet</h1><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
+      return res.status(400).send('<html><body style="background:#060b14;color:white;font-family:Arial;text-align:center;padding:50px"><h1>⚠️ Dynamic analysis not completed yet</h1><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
     }
 
     const raw = da.raw_report || {};
-    // TLS: check all possible locations MobSF might store it
-    const tlsRaw = da.tls_tests || raw.tls_tests || raw.tls || raw.tls_data ||
-      (raw.network_security?.tls) || null;
+    const md5Hash = raw.hash || appData.mobsfHash || null;
+    const MOBSF = process.env.MOBSF_URL || 'http://localhost:8000';
 
-    // Normalise into a consistent {_tests:[]} or flat object
-    // MobSF formats seen:
-    //  A) Array directly: [{name, result}, ...]
-    //  B) {status, tls_tests:[{name,result},...]}  ← wrapper with nested array
-    //  C) {tests:[{name,result},...]}
-    //  D) Flat: {has_cleartext, tls_misconfigured, no_tls_pin_or_transparency, pin_or_transparency_bypassed}
-    let tls = {};
-    const mapTests = (arr) => {
-      const out = { _tests: arr };
-      for (const t of arr) {
-        const name = (t.name || t.test || '').toLowerCase();
-        if (name.includes('cleartext'))                                   out.has_cleartext = !t.result;
-        if (name.includes('misconfigur'))                                 out.tls_misconfigured = !t.result;
-        if (name.includes('bypass'))                                      out.pin_or_transparency_bypassed = !t.result;
-        if (name.includes('pinning') && !name.includes('bypass'))        out.no_tls_pin_or_transparency = !t.result;
-        if (name.includes('transparency') && !name.includes('bypass'))   out.no_tls_pin_or_transparency = !t.result;
-      }
-      return out;
-    };
-    if (Array.isArray(tlsRaw)) {
-      // Format A: direct array
-      tls = mapTests(tlsRaw);
-    } else if (tlsRaw && typeof tlsRaw === 'object') {
-      if (Array.isArray(tlsRaw.tls_tests)) {
-        // Format B: {status, tls_tests:[...]}
-        tls = mapTests(tlsRaw.tls_tests);
-      } else if (tlsRaw.tls_tests && typeof tlsRaw.tls_tests === 'object') {
-        // Format E: {status, tls_tests:{has_cleartext,...}} — flat nested
-        tls = tlsRaw.tls_tests;
-      } else if (Array.isArray(tlsRaw.tests)) {
-        // Format C: {tests:[...]}
-        tls = mapTests(tlsRaw.tests);
-      } else if ('has_cleartext' in tlsRaw || 'tls_misconfigured' in tlsRaw) {
-        // Format D: flat top-level
-        tls = tlsRaw;
+    // ── TLS extraction ─────────────────────────────────────────────────────────
+    // Try multiple locations MobSF may store TLS data
+    let tlsFlat = null;
+    const _tlsRaw = da.tls_tests || raw.tls_tests || raw.tls || raw.ssl_tests || null;
+    if (_tlsRaw && typeof _tlsRaw === 'object') {
+      if ('has_cleartext' in _tlsRaw || 'tls_misconfigured' in _tlsRaw) {
+        tlsFlat = _tlsRaw;
+      } else if (_tlsRaw.tls_tests && typeof _tlsRaw.tls_tests === 'object' && !Array.isArray(_tlsRaw.tls_tests)) {
+        tlsFlat = _tlsRaw.tls_tests;
+      } else if (Array.isArray(_tlsRaw.tls_tests)) {
+        // array of {name, result}
+        tlsFlat = {};
+        for (const t of _tlsRaw.tls_tests) {
+          const n = (t.name || '').toLowerCase();
+          if (n.includes('cleartext'))     tlsFlat.has_cleartext = !t.result;
+          if (n.includes('misconfigur'))   tlsFlat.tls_misconfigured = !t.result;
+          if (n.includes('bypass'))        tlsFlat.pin_or_transparency_bypassed = !t.result;
+          if (n.includes('pinning') && !n.includes('bypass')) tlsFlat.no_tls_pin_or_transparency = !t.result;
+        }
+      } else if (Array.isArray(_tlsRaw)) {
+        tlsFlat = {};
+        for (const t of _tlsRaw) {
+          const n = (t.name || '').toLowerCase();
+          if (n.includes('cleartext'))     tlsFlat.has_cleartext = !t.result;
+          if (n.includes('misconfigur'))   tlsFlat.tls_misconfigured = !t.result;
+          if (n.includes('bypass'))        tlsFlat.pin_or_transparency_bypassed = !t.result;
+          if (n.includes('pinning') && !n.includes('bypass')) tlsFlat.no_tls_pin_or_transparency = !t.result;
+        }
       }
     }
+    const TLS_TESTS = tlsFlat ? [
+      { name: 'Cleartext Traffic Test',                       key: 'has_cleartext',                    desc: 'App does not transmit data in cleartext (HTTP without encryption).' },
+      { name: 'TLS Misconfiguration Test',                    key: 'tls_misconfigured',                desc: 'TLS is properly configured — no weak ciphers or outdated protocols detected.' },
+      { name: 'TLS Pinning / Certificate Transparency Bypass',key: 'pin_or_transparency_bypassed',     desc: 'Certificate pinning or CT could not be bypassed by MobSF.' },
+      { name: 'TLS Pinning / Certificate Transparency',       key: 'no_tls_pin_or_transparency',       desc: 'App implements certificate pinning or Certificate Transparency.' },
+    ] : [];
 
-    // Build network activity table from raw report
-    const networkData = raw.network_data || raw.network || [];
-    const activityData = raw.activities_tested || raw.activities || [];
-    const apiCalls = da.api_monitor ? (Array.isArray(da.api_monitor) ? da.api_monitor : [da.api_monitor]) : [];
-    const fridaLogs = da.frida_logs || null;
-    const domains = raw.domains || {};
-    const urls = raw.urls || [];
-    const trackers = raw.trackers || {};
-    const openRedirects = raw.open_redirect || [];
-    const exportedExploitable = raw.exported_activities_exploitable || [];
+    // ── Data extraction ────────────────────────────────────────────────────────
+    const domainsObj     = raw.domains || {};
+    const domainList     = Object.entries(domainsObj);
+    const trackersObj    = raw.trackers || {};
+    // MobSF may use: {detected_trackers:N, trackers:{name:{categories,url}}, total_trackers:N}
+    // OR just {name:{...}} flat dict
+    const trackerDict    = (trackersObj.trackers && typeof trackersObj.trackers === 'object')
+                             ? trackersObj.trackers
+                             : (typeof trackersObj === 'object' && !('detected_trackers' in trackersObj) ? trackersObj : {});
+    const trackerEntries = Object.entries(trackerDict);
+    const urlList        = Array.isArray(raw.urls) ? raw.urls : [];
+    const emailList      = Array.isArray(raw.emails) ? raw.emails : [];
+    const openRedirects  = Array.isArray(raw.open_redirect) ? raw.open_redirect : [];
+    const exportedActs   = Array.isArray(raw.exported_activities) ? raw.exported_activities
+                         : Array.isArray(raw.exported_activities_exploitable) ? raw.exported_activities_exploitable : [];
+    const testedActs     = Array.isArray(raw.activities) ? raw.activities : [];
+    const _clipboardRaw  = raw.clipboard_data || raw.clipboard || null;
+    const clipboardData  = (Array.isArray(_clipboardRaw) && _clipboardRaw.length === 0) ? null : _clipboardRaw;
+    const screenshots    = Array.isArray(raw.screenshots) ? raw.screenshots : [];
+    const networkSec     = Array.isArray(raw.network_security) ? raw.network_security : [];
+    const otherFiles     = Array.isArray(raw.other_files) ? raw.other_files
+                         : Array.isArray(raw.files_created) ? raw.files_created : [];
+    const apiCalls       = da.api_monitor
+                           ? (Array.isArray(da.api_monitor) ? da.api_monitor : [da.api_monitor])
+                           : [];
+    const fridaLogs      = da.frida_logs || null;
 
-    const domainList = typeof domains === 'object' ? Object.entries(domains) : [];
-    const trackerList = typeof trackers === 'object' ? Object.keys(trackers) : [];
-
-    const statusColor = (v) => v ? '#ef4444' : '#10b981';
-    const boolBadge = (v, trueLabel = 'YES', falseLabel = 'NO') =>
-      `<span style="background:${v ? '#7f1d1d' : '#052e16'};color:${v ? '#fca5a5' : '#4ade80'};padding:2px 8px;border-radius:4px;font-size:11px;">${v ? trueLabel : falseLabel}</span>`;
+    // ── Helper render functions ────────────────────────────────────────────────
+    const esc = (s) => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const riskBadge = (v, hi = 'FAIL', lo = 'PASS') =>
+      `<span class="badge ${v ? 'badge-red' : 'badge-green'}">${v ? '✗ ' + hi : '✓ ' + lo}</span>`;
+    const statusBadge = (flagged) =>
+      flagged ? '<span class="badge badge-red">⚠ Flagged</span>' : '<span class="badge badge-green">✓ Clean</span>';
+    const sectionHdr = (icon, title, count = null) =>
+      `<div class="sec-hdr"><span class="sec-icon">${icon}</span><span class="sec-title">${title}</span>${count !== null ? `<span class="sec-count">${count}</span>` : ''}</div>`;
 
     const html = `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Dynamic Analysis Results – ${appData.packageName || sha256}</title>
-  <meta charset="utf-8">
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Dynamic Analysis — ${esc(appData.appName || sha256)}</title>
   <style>
-    *{margin:0;padding:0;box-sizing:border-box}
-    body{background:#0a192f;color:#cbd5e1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:20px;min-height:100vh}
-    .container{max-width:1100px;margin:0 auto}
-    .back{display:inline-block;margin-bottom:16px;padding:7px 14px;background:#1d4ed8;color:white;text-decoration:none;border-radius:6px;font-size:13px}
-    .back:hover{background:#1e40af}
-    h1{color:#e2e8f0;font-size:22px;margin-bottom:4px}
-    .subtitle{color:#64748b;font-size:13px;margin-bottom:20px}
-    .section{background:#112240;border:1px solid #1e3a5f;border-radius:8px;padding:16px;margin-bottom:16px}
-    .section h2{color:#60a5fa;font-size:14px;font-weight:600;margin-bottom:12px;text-transform:uppercase;letter-spacing:.05em}
-    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
-    .card{background:#0a192f;border:1px solid #1e293b;border-radius:6px;padding:12px;text-align:center}
-    .card-label{font-size:11px;color:#64748b;text-transform:uppercase;margin-bottom:6px}
-    .card-val{font-size:22px;font-weight:700;color:#60a5fa}
-    .card-val.red{color:#ef4444}
-    .card-val.green{color:#10b981}
-    .card-val.yellow{color:#f59e0b}
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{background:#060b14;color:#cbd5e1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;padding:20px 16px}
+    a{color:#3b82f6;text-decoration:none}a:hover{text-decoration:underline}
+    .wrap{max-width:1140px;margin:0 auto}
+    /* Top bar */
+    .topbar{display:flex;align-items:center;gap:12px;margin-bottom:22px;flex-wrap:wrap}
+    .back-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;background:#1e293b;border:1px solid #334155;color:#94a3b8;border-radius:8px;font-size:13px;font-weight:500;transition:background .2s}
+    .back-btn:hover{background:#263248;color:#e2e8f0;text-decoration:none}
+    .page-title{font-size:20px;font-weight:700;color:#f1f5f9}
+    .page-sub{font-size:12px;color:#64748b;margin-top:3px}
+    /* Sections */
+    .section{background:#0f172a;border:1px solid #1e293b;border-radius:12px;padding:18px 20px;margin-bottom:14px;overflow:hidden}
+    .sec-hdr{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid #1e293b}
+    .sec-icon{font-size:18px;width:32px;height:32px;background:#0f2040;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+    .sec-title{font-size:14px;font-weight:600;color:#e2e8f0;text-transform:uppercase;letter-spacing:.05em}
+    .sec-count{margin-left:auto;background:#1e293b;color:#94a3b8;font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px}
+    /* Stat grid */
+    .stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+    .stat-card{background:#060b14;border:1px solid #1e293b;border-radius:10px;padding:14px;text-align:center}
+    .stat-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
+    .stat-val{font-size:26px;font-weight:700;color:#3b82f6;line-height:1}
+    .stat-val.green{color:#22c55e}.stat-val.red{color:#ef4444}.stat-val.yellow{color:#f59e0b}.stat-val.gray{color:#94a3b8;font-size:13px;margin-top:4px}
+    /* Env cards */
+    .env-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}
+    .env-card{background:#060b14;border:1px solid #1e293b;border-radius:10px;padding:12px;text-align:center}
+    .env-card .env-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px}
+    .env-card .env-icon{font-size:22px}
+    /* Tables */
+    .tbl-wrap{overflow-x:auto}
     table{width:100%;border-collapse:collapse;font-size:12px}
-    th{background:#0d2137;color:#94a3b8;padding:8px;text-align:left;font-weight:600;border-bottom:1px solid #1e293b}
-    td{padding:7px 8px;border-bottom:1px solid #0d2137;vertical-align:top;word-break:break-all}
-    tr:hover td{background:rgba(30,58,95,0.3)}
-    .badge{padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600}
-    .badge-red{background:#7f1d1d;color:#fca5a5}
-    .badge-green{background:#052e16;color:#4ade80}
-    .badge-yellow{background:#451a03;color:#fcd34d}
-    .badge-blue{background:#1e3a8a;color:#93c5fd}
-    .empty{color:#475569;font-size:12px;padding:8px 0}
-    .dl-btn{display:inline-block;margin-top:12px;padding:8px 18px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-size:13px;border:none;cursor:pointer}
-    .dl-btn:hover{background:#1d4ed8}
-    pre{background:#0d2137;padding:10px;border-radius:4px;font-size:11px;overflow-x:auto;max-height:200px;overflow-y:auto;color:#94a3b8}
+    th{background:#070d1a;color:#94a3b8;padding:9px 10px;text-align:left;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #1e293b}
+    td{padding:8px 10px;border-bottom:1px solid #0d1a2e;vertical-align:top;word-break:break-word}
+    tr:last-child td{border-bottom:none}
+    tr:hover td{background:rgba(30,58,100,.25)}
+    /* Badges */
+    .badge{display:inline-block;padding:3px 8px;border-radius:5px;font-size:11px;font-weight:600}
+    .badge-red{background:#450a0a;color:#fca5a5;border:1px solid #7f1d1d}
+    .badge-green{background:#052e16;color:#4ade80;border:1px solid #166534}
+    .badge-yellow{background:#451a03;color:#fcd34d;border:1px solid #92400e}
+    .badge-blue{background:#1e3a8a;color:#93c5fd;border:1px solid #1d4ed8}
+    .badge-gray{background:#1e293b;color:#94a3b8;border:1px solid #334155}
+    /* TLS tests */
+    .tls-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #0d1a2e}
+    .tls-row:last-child{border-bottom:none}
+    .tls-status{width:80px;flex-shrink:0;text-align:center}
+    .tls-name{font-size:13px;color:#e2e8f0;font-weight:500}
+    .tls-desc{font-size:11px;color:#475569;margin-top:3px}
+    /* URL / email chips */
+    .chip-list{display:flex;flex-wrap:wrap;gap:6px}
+    .chip{background:#0d1a2e;border:1px solid #1e293b;color:#94a3b8;padding:4px 10px;border-radius:6px;font-size:11px;word-break:break-all}
+    .chip.url{color:#60a5fa}.chip.email{color:#a78bfa}
+    /* Pre code blocks */
+    pre{background:#070d1a;border:1px solid #1e293b;border-radius:8px;padding:12px;font-size:11px;overflow:auto;max-height:280px;color:#94a3b8;line-height:1.6}
+    /* Collapsible */
+    details summary{cursor:pointer;font-size:12px;color:#64748b;margin-top:8px;padding:4px 0;user-select:none}
+    details summary:hover{color:#94a3b8}
+    details[open] summary{margin-bottom:8px}
+    /* Empty state */
+    .empty{color:#334155;font-size:12px;padding:10px 0;font-style:italic}
+    /* Screenshot grid */
+    .ss-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
+    .ss-item{background:#070d1a;border:1px solid #1e293b;border-radius:8px;overflow:hidden;text-align:center}
+    .ss-item img{width:100%;display:block;max-height:220px;object-fit:contain;background:#000}
+    .ss-item span{font-size:10px;color:#64748b;display:block;padding:4px}
+    /* Download btn */
+    .dl-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 22px;background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#fff;border-radius:9px;font-size:13px;font-weight:600;transition:opacity .2s}
+    .dl-btn:hover{opacity:.88;text-decoration:none}
+    .risk-high{color:#ef4444}.risk-med{color:#f59e0b}.risk-low{color:#22c55e}
+    @media(max-width:600px){.stat-grid,.env-grid{grid-template-columns:repeat(2,1fr)}}
   </style>
 </head>
 <body>
-<div class="container">
-  <a class="back" href="/uploadapp/apps?date=${selectedDate}">← Back to Apps</a>
-  <h1>🔍 Dynamic Analysis Results</h1>
-  <p class="subtitle">${appData.appName || 'Unknown'} &nbsp;·&nbsp; ${appData.packageName || sha256} &nbsp;·&nbsp; Completed: ${new Date(da.completedAt).toLocaleString()}</p>
+<div class="wrap">
 
-  <!-- Environment Setup -->
-  <div class="section">
-    <h2>⚙️ Environment Setup</h2>
-    <div class="grid">
-      <div class="card"><div class="card-label">MobSFy Applied</div><div class="card-val ${da.mobsfy_applied ? 'green' : 'yellow'}">${da.mobsfy_applied ? '✅' : '⚠️'}</div></div>
-      <div class="card"><div class="card-label">Root CA Installed</div><div class="card-val ${da.root_ca_installed ? 'green' : 'yellow'}">${da.root_ca_installed ? '✅' : '⚠️'}</div></div>
-      <div class="card"><div class="card-label">HTTPS Proxy</div><div class="card-val ${da.proxy_set ? 'green' : 'yellow'}">${da.proxy_set ? '✅ Set' : '⚠️'}</div></div>
-      <div class="card"><div class="card-label">Frida Hooks</div><div class="card-val ${da.frida_applied ? 'green' : 'yellow'}">${da.frida_applied ? '✅' : '⚠️'}</div></div>
-      <div class="card"><div class="card-label">Activity Tester</div><div class="card-val ${da.activity_tester_run ? 'green' : 'yellow'}">${da.activity_tester_run ? '✅' : '⚠️'}</div></div>
-      <div class="card"><div class="card-label">Device</div><div class="card-val" style="font-size:12px;color:#94a3b8">${da.device_identifier || 'N/A'}</div></div>
+  <div class="topbar">
+    <a class="back-btn" href="/uploadapp/apps?date=${selectedDate}">← Back to Apps</a>
+    <div>
+      <div class="page-title">🔍 Dynamic Analysis Results</div>
+      <div class="page-sub">${esc(appData.appName || 'Unknown')} &nbsp;·&nbsp; ${esc(appData.packageName || sha256)} &nbsp;·&nbsp; Completed: ${new Date(da.completedAt).toLocaleString()}</div>
     </div>
   </div>
 
-  <!-- TLS/SSL Tests -->
+  <!-- ── 1. Environment Setup ─────────────────────────────────── -->
   <div class="section">
-    <h2>🔒 TLS / SSL Security Tests</h2>
-    ${
-      Object.keys(tls).filter(k => k !== '_tests').length === 0
-      ? '<p class="empty">TLS test data not available. Re-run dynamic analysis to capture TLS results.</p>'
-      : (() => {
-          // If we have the raw tests array, render as table
-          if (tls._tests && tls._tests.length > 0) {
-            return `<table>
-              <tr><th>Test</th><th>Result</th></tr>
-              ${tls._tests.map(t => `<tr><td>${t.name || t.test || JSON.stringify(t)}</td><td><span class="badge ${t.result ? 'badge-green' : 'badge-red'}">${t.result ? '✅ PASS' : '❌ FAIL'}</span></td></tr>`).join('')}
-            </table>`;
-          }
-          // Otherwise render as cards
-          return `<div class="grid">
-            <div class="card"><div class="card-label">TLS Misconfigured</div><div class="card-val ${tls.tls_misconfigured ? 'red' : 'green'}">${boolBadge(tls.tls_misconfigured, 'YES ⚠️', 'NO ✅')}</div></div>
-            <div class="card"><div class="card-label">No TLS Pinning</div><div class="card-val">${boolBadge(tls.no_tls_pin_or_transparency, 'Yes ⚠️', 'No ✅')}</div></div>
-            <div class="card"><div class="card-label">Pinning Bypassed</div><div class="card-val">${boolBadge(tls.pin_or_transparency_bypassed, 'Yes ⚠️', 'No ✅')}</div></div>
-            <div class="card"><div class="card-label">Cleartext Traffic</div><div class="card-val ${tls.has_cleartext ? 'red' : 'green'}">${boolBadge(tls.has_cleartext, 'YES ⚠️', 'NO ✅')}</div></div>
+    ${sectionHdr('⚙️', 'Environment Setup')}
+    <div class="env-grid">
+      <div class="env-card"><div class="env-label">MobSFy Applied</div><div class="env-icon">${da.mobsfy_applied ? '✅' : '⚠️'}</div></div>
+      <div class="env-card"><div class="env-label">Root CA Installed</div><div class="env-icon">${da.root_ca_installed ? '✅' : '⚠️'}</div></div>
+      <div class="env-card"><div class="env-label">HTTPS Proxy</div><div class="env-icon">${da.proxy_set ? '✅' : '⚠️'}</div><div style="font-size:10px;color:#22c55e">${da.proxy_set ? 'Set' : ''}</div></div>
+      <div class="env-card"><div class="env-label">Frida Hooks</div><div class="env-icon">${da.frida_applied ? '✅' : '⚠️'}</div></div>
+      <div class="env-card"><div class="env-label">Activity Tester</div><div class="env-icon">${da.activity_tester_run ? '✅' : '⚠️'}</div></div>
+      <div class="env-card"><div class="env-label">Device / Emulator</div><div class="env-icon" style="font-size:11px;color:#94a3b8;word-break:break-all">${esc(da.device_identifier || 'N/A')}</div></div>
+    </div>
+  </div>
+
+  <!-- ── 2. TLS / SSL Security Tests ─────────────────────────── -->
+  <div class="section">
+    ${sectionHdr('🔒', 'TLS / SSL Security Tests', TLS_TESTS.length ? TLS_TESTS.length + ' tests' : null)}
+    ${TLS_TESTS.length === 0
+      ? `<p class="empty">TLS test data not captured. This happens when TLS tests run before the app starts network traffic. Re-run dynamic analysis and ensure the app makes HTTPS requests. You can view full TLS results on <a href="${MOBSF}/dynamic_report/${md5Hash || ''}" target="_blank">MobSF directly</a>.</p>`
+      : TLS_TESTS.map(t => {
+          const failed = !!tlsFlat[t.key];
+          return `<div class="tls-row">
+            <div class="tls-status">${riskBadge(failed)}</div>
+            <div><div class="tls-name">${esc(t.name)}</div><div class="tls-desc">${t.desc}</div></div>
           </div>`;
-        })()
+        }).join('')
     }
   </div>
 
-  <!-- Traffic Summary -->
+  <!-- ── 3. Traffic & Behaviour Summary ───────────────────────── -->
   <div class="section">
-    <h2>📊 Traffic & Behaviour Summary</h2>
-    <div class="grid">
-      <div class="card"><div class="card-label">Domains Contacted</div><div class="card-val ${da.domains_count > 0 ? 'yellow' : 'green'}">${da.domains_count || 0}</div></div>
-      <div class="card"><div class="card-label">URLs Found</div><div class="card-val">${da.urls_found || 0}</div></div>
-      <div class="card"><div class="card-label">Trackers</div><div class="card-val ${da.trackers > 0 ? 'red' : 'green'}">${da.trackers || 0}</div></div>
-      <div class="card"><div class="card-label">Network Issues</div><div class="card-val ${da.network_security_issues > 0 ? 'red' : 'green'}">${da.network_security_issues || 0}</div></div>
-      <div class="card"><div class="card-label">Open Redirects</div><div class="card-val ${da.open_redirects > 0 ? 'red' : 'green'}">${da.open_redirects || 0}</div></div>
-      <div class="card"><div class="card-label">Exported Activities</div><div class="card-val">${da.exported_activities || 0}</div></div>
+    ${sectionHdr('📊', 'Traffic & Behaviour Summary')}
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">Domains Contacted</div><div class="stat-val ${domainList.length > 0 ? 'yellow' : 'green'}">${domainList.length}</div></div>
+      <div class="stat-card"><div class="stat-label">URLs Found</div><div class="stat-val">${urlList.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Trackers</div><div class="stat-val ${trackerEntries.length > 0 ? 'red' : 'green'}">${da.trackers || trackerEntries.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Network Issues</div><div class="stat-val ${networkSec.length > 0 ? 'red' : 'green'}">${networkSec.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Open Redirects</div><div class="stat-val ${openRedirects.length > 0 ? 'red' : 'green'}">${openRedirects.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Exported Activities</div><div class="stat-val ${exportedActs.length > 0 ? 'yellow' : 'green'}">${exportedActs.length || da.exported_activities || 0}</div></div>
+      <div class="stat-card"><div class="stat-label">Emails Found</div><div class="stat-val">${emailList.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Screenshots</div><div class="stat-val">${screenshots.length}</div></div>
     </div>
   </div>
 
-  <!-- Domains -->
+  <!-- ── 4. Domains Contacted ─────────────────────────────────── -->
   ${domainList.length > 0 ? `
   <div class="section">
-    <h2>🌍 Domains Contacted (${domainList.length})</h2>
-    <table>
-      <tr><th>Domain</th><th>Status</th><th>Geolocation</th><th>Flag</th></tr>
-      ${domainList.slice(0, 100).map(([domain, info]) => {
-        const flagged = info?.bad === true;
-        const country = info?.geolocation?.country_long || info?.country || '';
-        const status = info?.status || '';
+    ${sectionHdr('🌍', 'Domains Contacted', domainList.length)}
+    <div class="tbl-wrap"><table>
+      <tr><th>Domain</th><th>Status</th><th>IP Address</th><th>Country</th><th>City / Region</th><th>Coordinates</th></tr>
+      ${domainList.map(([domain, info]) => {
+        const geo = info?.geolocation || info?.geo || {};
+        const flagged = info?.bad === true || info?.status === 'bad' || info?.malicious === true;
+        const ip = geo.ip || info?.ip || '';
+        const country = geo.country_long || geo.country || info?.country || '';
+        const city = geo.city || '';
+        const region = geo.region || '';
+        const cityRegion = [city, region].filter(Boolean).join(', ');
+        const lat = geo.latitude || geo.lat || '';
+        const lon = geo.longitude || geo.lon || '';
+        const coords = (lat && lon) ? `${Number(lat).toFixed(2)}, ${Number(lon).toFixed(2)}` : '';
         return `<tr>
-          <td>${domain}</td>
-          <td><span class="badge ${flagged ? 'badge-red' : 'badge-green'}">${flagged ? '⚠️ Flagged' : '✅ Clean'}</span></td>
-          <td>${country}</td>
-          <td>${status}</td>
+          <td style="font-weight:500;color:#e2e8f0">${esc(domain)}</td>
+          <td>${statusBadge(flagged)}</td>
+          <td style="font-family:monospace;font-size:11px">${esc(ip)}</td>
+          <td>${esc(country)}</td>
+          <td>${esc(cityRegion)}</td>
+          <td style="font-size:11px;color:#475569">${esc(coords)}</td>
         </tr>`;
       }).join('')}
-    </table>
+    </table></div>
   </div>` : ''}
 
-  <!-- Trackers -->
-  ${trackerList.length > 0 ? `
+  <!-- ── 5. Trackers Detected ──────────────────────────────────── -->
+  ${trackerEntries.length > 0 ? `
   <div class="section">
-    <h2>🕵️ Trackers Detected (${trackerList.length})</h2>
-    <div style="display:flex;flex-wrap:wrap;gap:8px">
-      ${trackerList.map(t => `<span class="badge badge-red">${t}</span>`).join('')}
+    ${sectionHdr('🕵️', 'Trackers Detected', trackerEntries.length)}
+    <div class="tbl-wrap"><table>
+      <tr><th>Tracker Name</th><th>Categories</th><th>Website</th></tr>
+      ${trackerEntries.map(([name, info]) => {
+        const cats = Array.isArray(info?.categories) ? info.categories : (info?.category ? [info.category] : []);
+        const url = info?.url || info?.website || '';
+        return `<tr>
+          <td style="font-weight:500;color:#fca5a5">${esc(name)}</td>
+          <td>${cats.map(c => `<span class="badge badge-yellow">${esc(c)}</span>`).join(' ')}</td>
+          <td>${url ? `<a href="${esc(url)}" target="_blank" style="font-size:11px">${esc(url)}</a>` : '<span class="empty">—</span>'}</td>
+        </tr>`;
+      }).join('')}
+    </table></div>
+  </div>` : (da.trackers > 0 ? `
+  <div class="section">
+    ${sectionHdr('🕵️', 'Trackers Detected', da.trackers)}
+    <p style="font-size:12px;color:#64748b">${da.trackers} tracker(s) detected. Detailed tracker names are available in the <a href="/uploadapp/dynamic-report/${sha256}?date=${selectedDate}">full PDF report</a>.</p>
+  </div>` : '')}
+
+  <!-- ── 6. URLs Found ─────────────────────────────────────────── -->
+  ${urlList.length > 0 ? `
+  <div class="section">
+    ${sectionHdr('🔗', 'URLs Found', urlList.length)}
+    <div class="chip-list">
+      ${urlList.slice(0, 200).map(u => `<span class="chip url">${esc(u)}</span>`).join('')}
+      ${urlList.length > 200 ? `<span class="chip">+${urlList.length - 200} more in PDF report</span>` : ''}
     </div>
   </div>` : ''}
 
-  <!-- Network Activity -->
-  ${networkData.length > 0 ? `
+  <!-- ── 7. Emails Found ───────────────────────────────────────── -->
+  ${emailList.length > 0 ? `
   <div class="section">
-    <h2>📡 Network Activity (${networkData.length})</h2>
-    <table>
-      <tr><th>Issue / Finding</th><th>Description</th></tr>
-      ${networkData.slice(0, 50).map(n => {
-        const title = n.title || n.issue || JSON.stringify(n).substring(0,80);
-        const desc = n.description || n.details || '';
-        return `<tr><td>${title}</td><td>${desc}</td></tr>`;
-      }).join('')}
-    </table>
+    ${sectionHdr('📧', 'Emails Found', emailList.length)}
+    <div class="chip-list">
+      ${emailList.map(e => `<span class="chip email">${esc(e)}</span>`).join('')}
+    </div>
   </div>` : ''}
 
-  <!-- Exported Exploitable Activities -->
-  ${exportedExploitable.length > 0 ? `
+  <!-- ── 8. Open Redirects ─────────────────────────────────────── -->
+  ${openRedirects.length > 0 ? `
   <div class="section">
-    <h2>⚠️ Exported / Exploitable Activities (${exportedExploitable.length})</h2>
-    <table>
-      <tr><th>Activity</th><th>Details</th></tr>
-      ${exportedExploitable.slice(0, 50).map(a => {
-        const name = typeof a === 'string' ? a : (a.activity || a.name || JSON.stringify(a).substring(0,60));
-        const det = typeof a === 'object' ? (a.details || '') : '';
-        return `<tr><td>${name}</td><td>${det}</td></tr>`;
-      }).join('')}
-    </table>
+    ${sectionHdr('↪️', 'Open Redirects Detected', openRedirects.length)}
+    <div class="tbl-wrap"><table>
+      <tr><th>#</th><th>Redirect</th></tr>
+      ${openRedirects.map((r, i) => `<tr><td>${i+1}</td><td>${esc(typeof r === 'string' ? r : JSON.stringify(r))}</td></tr>`).join('')}
+    </table></div>
   </div>` : ''}
 
-  <!-- Frida API Monitor -->
+  <!-- ── 9. Exported / Exploitable Activities ─────────────────── -->
+  ${exportedActs.length > 0 ? `
+  <div class="section">
+    ${sectionHdr('⚠️', 'Exported / Exploitable Activities', exportedActs.length)}
+    <p style="font-size:11px;color:#64748b;margin-bottom:10px">These activities are exported and may be launchable by external apps without permission.</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>#</th><th>Activity Name</th><th>Details</th></tr>
+      ${exportedActs.map((a, i) => {
+        const name = typeof a === 'string' ? a : (a.activity || a.name || JSON.stringify(a).substring(0,80));
+        const det  = typeof a === 'object' ? (a.details || a.screenshot ? `Screenshot: ${a.screenshot || 'N/A'}` : '') : '';
+        return `<tr><td style="color:#64748b">${i+1}</td><td style="font-family:monospace;font-size:11px;color:#fcd34d">${esc(name)}</td><td style="font-size:11px;color:#64748b">${esc(det)}</td></tr>`;
+      }).join('')}
+    </table></div>
+  </div>` : ''}
+
+  <!-- ── 10. Activities Tested ─────────────────────────────────── -->
+  ${testedActs.length > 0 ? `
+  <div class="section">
+    ${sectionHdr('🏃', 'Activities Tested During Analysis', testedActs.length)}
+    <details>
+      <summary>Show / hide ${testedActs.length} activities</summary>
+      <div class="chip-list" style="margin-top:8px">
+        ${testedActs.map(a => `<span class="chip" style="font-family:monospace">${esc(typeof a === 'string' ? a : JSON.stringify(a))}</span>`).join('')}
+      </div>
+    </details>
+  </div>` : ''}
+
+  <!-- ── 11. Network Security Findings ────────────────────────── -->
+  ${networkSec.length > 0 ? `
+  <div class="section">
+    ${sectionHdr('📡', 'Network Security Findings', networkSec.length)}
+    <div class="tbl-wrap"><table>
+      <tr><th>Finding</th><th>Description</th></tr>
+      ${networkSec.slice(0,50).map(n => {
+        const title = n.title || n.issue || n.name || JSON.stringify(n).substring(0,80);
+        const desc  = n.description || n.details || n.info || '';
+        return `<tr><td style="font-weight:500;color:#fca5a5">${esc(title)}</td><td style="font-size:11px">${esc(desc)}</td></tr>`;
+      }).join('')}
+    </table></div>
+  </div>` : ''}
+
+  <!-- ── 12. Clipboard Dump ────────────────────────────────────── -->
+  ${clipboardData ? `
+  <div class="section">
+    ${sectionHdr('📋', 'Clipboard Dump')}
+    <pre>${esc(typeof clipboardData === 'string' ? clipboardData : JSON.stringify(clipboardData, null, 2))}</pre>
+  </div>` : ''}
+
+  <!-- ── 13. Screenshots ───────────────────────────────────────── -->
+  ${screenshots.length > 0 ? `
+  <div class="section">
+    ${sectionHdr('📷', 'Screenshots', screenshots.length)}
+    ${md5Hash ? `
+    <div class="ss-grid">
+      ${screenshots.slice(0,20).map(s => {
+        const fname = typeof s === 'string' ? s : (s.name || s.screenshot || '');
+        const url = fname ? `${MOBSF}/screenshot/${md5Hash}/${fname}` : '';
+        return fname
+          ? `<div class="ss-item"><img src="${esc(url)}" alt="${esc(fname)}" onerror="this.style.display='none';this.nextSibling.textContent='Image not available'"/><span>${esc(fname)}</span></div>`
+          : '';
+      }).join('')}
+    </div>
+    ${screenshots.length > 20 ? `<p style="font-size:11px;color:#64748b;margin-top:8px">Showing first 20 of ${screenshots.length}. See full report on <a href="${MOBSF}/dynamic_report/${md5Hash}" target="_blank">MobSF</a>.</p>` : ''}` :
+    `<p class="empty">Screenshots captured but MobSF hash unavailable for direct links. View on <a href="${MOBSF}" target="_blank">MobSF</a>.</p>`}
+  </div>` : ''}
+
+  <!-- ── 14. Other Files Created ───────────────────────────────── -->
+  ${otherFiles.length > 0 ? `
+  <div class="section">
+    ${sectionHdr('📁', 'Other Files Created / Accessed', otherFiles.length)}
+    <div class="tbl-wrap"><table>
+      <tr><th>#</th><th>File Path</th></tr>
+      ${otherFiles.slice(0,100).map((f, i) => `<tr><td style="color:#64748b">${i+1}</td><td style="font-family:monospace;font-size:11px">${esc(typeof f === 'string' ? f : JSON.stringify(f))}</td></tr>`).join('')}
+      ${otherFiles.length > 100 ? `<tr><td colspan="2" style="color:#475569">… and ${otherFiles.length - 100} more</td></tr>` : ''}
+    </table></div>
+  </div>` : ''}
+
+  <!-- ── 15. Frida API Monitor ─────────────────────────────────── -->
   ${apiCalls.length > 0 ? `
   <div class="section">
-    <h2>🪝 Frida API Monitor Calls</h2>
-    <pre>${JSON.stringify(apiCalls, null, 2).substring(0, 3000)}</pre>
+    ${sectionHdr('🪝', 'Frida API Monitor Calls', apiCalls.length)}
+    ${apiCalls.length > 0 && apiCalls[0] && typeof apiCalls[0] === 'object' && apiCalls[0].data ? `
+    <div class="tbl-wrap"><table>
+      <tr><th>Method</th><th>Class</th><th>Arguments</th><th>Called From</th></tr>
+      ${(Array.isArray(apiCalls[0].data) ? apiCalls[0].data : apiCalls).slice(0,50).map(call => {
+        const c = typeof call === 'object' ? call : {};
+        const args = Array.isArray(c.arguments) ? c.arguments.map(a => `<code>${esc(a)}</code>`).join(', ') : esc(JSON.stringify(c.arguments || ''));
+        return `<tr>
+          <td><span class="badge badge-blue">${esc(c.method || '—')}</span></td>
+          <td style="font-family:monospace;font-size:10px;color:#a5b4fc">${esc(c.class || '—')}</td>
+          <td style="font-size:11px">${args}</td>
+          <td style="font-size:10px;color:#475569">${esc((c.calledFrom || '').split('(')[0])}</td>
+        </tr>`;
+      }).join('')}
+    </table></div>
+    <details><summary>View raw JSON</summary><pre>${esc(JSON.stringify(apiCalls, null, 2).substring(0, 6000))}</pre></details>` :
+    `<pre>${esc(JSON.stringify(apiCalls, null, 2).substring(0, 6000))}</pre>`}
   </div>` : ''}
 
-  <!-- Frida Logs -->
+  <!-- ── 16. Frida Logs ────────────────────────────────────────── -->
   ${fridaLogs ? `
   <div class="section">
-    <h2>📝 Frida Logs</h2>
-    <pre>${typeof fridaLogs === 'string' ? fridaLogs.substring(0,3000) : JSON.stringify(fridaLogs, null, 2).substring(0,3000)}</pre>
+    ${sectionHdr('📝', 'Frida Logs')}
+    <pre>${esc(typeof fridaLogs === 'string' ? fridaLogs.substring(0,4000) : JSON.stringify(fridaLogs, null, 2).substring(0,4000))}</pre>
   </div>` : ''}
 
-  <!-- Download Button -->
-  <div style="text-align:center;margin:20px 0">
+  <!-- ── Download ──────────────────────────────────────────────── -->
+  <div style="text-align:center;padding:24px 0 8px">
     <a class="dl-btn" href="/uploadapp/dynamic-report/${sha256}?date=${selectedDate}">📄 Download Full Dynamic Analysis PDF</a>
+    ${md5Hash ? `<br/><a href="${MOBSF}/dynamic_report/${md5Hash}" target="_blank" style="font-size:12px;color:#64748b;display:block;margin-top:10px">View original MobSF report ↗</a>` : ''}
   </div>
+
 </div>
 </body>
 </html>`;
@@ -3467,9 +3680,10 @@ router.get("/dynamic-results/:sha256", async (req, res) => {
     res.send(html);
   } catch (err) {
     console.error("[Dynamic Results] Error:", err.message);
-    res.status(500).send(`<html><body style="background:#0a192f;color:white;font-family:Arial;padding:40px"><h1>Error</h1><p>${err.message}</p></body></html>`);
+    res.status(500).send(`<html><body style="background:#060b14;color:white;font-family:Arial;padding:40px"><h1>Error loading results</h1><p>${err.message}</p><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>`);
   }
 });
+
 
 // GET /dynamic-status/:sha256 - Get dynamic analysis status (for frontend polling)
 router.get("/dynamic-status/:sha256", async (req, res) => {

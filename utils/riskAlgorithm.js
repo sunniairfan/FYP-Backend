@@ -1,362 +1,283 @@
 /**
- * Enhanced Weighted Multi-Source Risk Scoring Algorithm v2.0
- * Aggregates VT, MobSF Static, MobSF Dynamic+Permissions, and ML predictions with:
- * - Permissions logic integrated into MobSF dynamic score
- * - Dynamic weight adjustment based on data availability
- * - Graceful handling of missing data with intelligent defaults
- * - Confidence scoring based on data completeness
+ * Weighted Multi-Source Risk Scoring Algorithm v3.0
+ *
+ * SOURCES & BASE WEIGHTS (when all 4 available):
+ *   VirusTotal     40%  — gold standard: AV engine consensus
+ *   MobSF Static   25%  — code-level: permissions, APIs, manifest
+ *   MobSF Dynamic  28%  — runtime: network, trackers, TLS
+ *   ML Prediction   7%  — trained malware probability model
+ *
+ * SCORE SCALE  0–100
+ *   0–29   SAFE       |  30–54  SUSPICIOUS  |  55–100  MALICIOUS
+ *
+ * CONFIDENCE: 25% per available source (max 100% with all 4).
+ * Missing sources have their weight redistributed proportionally.
  */
 
+// ── helpers ──────────────────────────────────────────────────────────────────
+function linearMap(v, inMin, inMax, outMin, outMax) {
+  if (inMax === inMin) return outMin;
+  return outMin + (Math.min(Math.max(v, inMin), inMax) - inMin) / (inMax - inMin) * (outMax - outMin);
+}
+
+function redistributeWeights(base, available) {
+  let activeSum = 0;
+  for (const [k, w] of Object.entries(base)) { if (available[k]) activeSum += w; }
+  if (activeSum === 0) return base;
+  const out = {};
+  for (const [k, w] of Object.entries(base)) { out[k] = available[k] ? w / activeSum : 0; }
+  return out;
+}
+
+function statusFromScore(s) {
+  return s < 30 ? 'SAFE' : s < 55 ? 'SUSPICIOUS' : 'MALICIOUS';
+}
+
 function calculateWeightedRiskScore(app) {
-  // Initialize base scores and confidence tracking
-  const scores = {
-    vt: { score: null, isAvailable: false, status: 'unknown', details: {} },
-    mobsfStatic: { score: null, isAvailable: false, status: 'unknown', details: {} },
-    mobsfDynamic: { score: null, isAvailable: false, status: 'unknown', details: {} },
-    ml: { score: null, isAvailable: false, status: 'unknown', details: {} },
+  const BASE_WEIGHTS = { vt: 0.40, mobsfStatic: 0.25, mobsfDynamic: 0.28, ml: 0.07 };
+
+  const result = {
+    vt:           { score: null, isAvailable: false, status: 'UNKNOWN', weight: 0, explanation: '', details: {} },
+    mobsfStatic:  { score: null, isAvailable: false, status: 'UNKNOWN', weight: 0, explanation: '', details: {} },
+    mobsfDynamic: { score: null, isAvailable: false, status: 'UNKNOWN', weight: 0, explanation: '', details: {} },
+    ml:           { score: null, isAvailable: false, status: 'UNKNOWN', weight: 0, explanation: '', details: {} },
     dataSourcesCount: 0,
     confidence: 0,
-    finalScore: 0,
+    finalScore: 50,
     finalStatus: 'UNKNOWN',
-    breakdown: {}
+    finalExplanation: '',
+    breakdown: {},
+    riskFactors: [],
+    positiveFactors: []
   };
 
-  // ============================================
-  // 1. VT MULTI-ENGINE SCANNING
-  // ============================================
+  // ══════════════════════════════════════════════════════════════
+  // 1. VIRUSTOTAL  (base weight 40%)
+  //    Detection rate → risk curve designed for APK analysis
+  //    0 detections → 8 | 1-2 → 35-50 | 3-5 → 55-65
+  //    6-10 / ≥10% → 65-78 | >10 / ≥20% → 78-96
+  // ══════════════════════════════════════════════════════════════
   if (app.virusTotalAnalysis) {
     const vt = app.virusTotalAnalysis;
-    let detectedEngines = 0;
-    let totalEngines = 0;
-    
-    // Parse detection ratio (e.g., "2/65" -> detected=2, total=65)
-    if (vt.detectionRatio && typeof vt.detectionRatio === 'string') {
+    let malCount = vt.maliciousCount || 0;
+    let suspCount = vt.suspiciousCount || 0;
+    let totalEngines = vt.totalEngines || 0;
+    let detectedCount = malCount + suspCount;
+
+    if (totalEngines === 0 && vt.detectionRatio && typeof vt.detectionRatio === 'string') {
       const parts = vt.detectionRatio.split('/');
-      detectedEngines = parseInt(parts[0]) || 0;
-      totalEngines = parseInt(parts[1]) || 1;
-    } else if (vt.maliciousCount !== undefined && vt.suspiciousCount !== undefined) {
-      detectedEngines = (vt.maliciousCount || 0) + (vt.suspiciousCount || 0);
-      totalEngines = (vt.maliciousCount || 0) + (vt.suspiciousCount || 0) + (vt.undetectedCount || 0);
-    } else if (vt.detectedEngines !== undefined && vt.totalEngines !== undefined) {
-      detectedEngines = vt.detectedEngines;
-      totalEngines = vt.totalEngines;
+      detectedCount = parseInt(parts[0]) || 0;
+      totalEngines  = parseInt(parts[1]) || 1;
+      malCount = detectedCount;
+    }
+    if (totalEngines === 0 && vt.detectedEngines !== undefined) {
+      detectedCount = vt.detectedEngines;
+      totalEngines  = vt.totalEngines || (detectedCount + (vt.undetectedCount || 0));
     }
 
-    // Step-based VT scoring: any detection is a meaningful signal
     if (totalEngines > 0) {
-      const detectionPercentage = (detectedEngines / totalEngines) * 100;
+      const rate = detectedCount / totalEngines;
+      let vtScore;
+      if (detectedCount === 0)      vtScore = 8;
+      else if (detectedCount === 1) vtScore = 38;
+      else if (detectedCount === 2) vtScore = 50;
+      else if (detectedCount <= 5 || rate < 0.10) vtScore = linearMap(detectedCount, 3, 5, 55, 65);
+      else if (detectedCount <= 10 || rate < 0.20) vtScore = linearMap(detectedCount, 6, 10, 65, 78);
+      else vtScore = Math.min(78 + (rate - 0.20) * 90, 96);
 
-      if (detectedEngines === 0) {
-        scores.vt.score = 10;
-        scores.vt.status = 'SAFE';
-      } else if (detectedEngines <= 2) {
-        // 1-2 engines: risky, score 45-50
-        scores.vt.score = 40 + (detectedEngines * 5);
-        scores.vt.status = 'RISKY';
-      } else if (detectedEngines <= 5 || detectionPercentage < 15) {
-        // 3-5 engines or < 15% detected: suspicious-high, score 64-70
-        scores.vt.score = 55 + (detectedEngines * 3);
-        scores.vt.status = 'SUSPICIOUS';
-      } else if (detectionPercentage < 30) {
-        // 15-30% detected: high risk, score 70-84
-        scores.vt.score = 70 + Math.min(detectedEngines, 14);
-        scores.vt.status = 'MALICIOUS';
-      } else {
-        // > 30% detected: definitively malicious, score 85-95
-        scores.vt.score = Math.min(85 + (detectionPercentage - 30) * 0.5, 95);
-        scores.vt.status = 'MALICIOUS';
-      }
-      scores.vt.score = Math.min(Math.max(scores.vt.score, 10), 95);
-      scores.vt.isAvailable = true;
-      scores.dataSourcesCount++;
-    } else {
-      // No scan data available - use neutral default
-      scores.vt.score = 50; // Neutral middle ground
-      scores.vt.isAvailable = false;
-      scores.vt.status = 'UNKNOWN';
+      vtScore = Math.round(Math.min(Math.max(vtScore, 5), 96));
+      result.vt.score = vtScore;
+      result.vt.isAvailable = true;
+      result.vt.status = statusFromScore(vtScore);
+      result.vt.details = { detectedCount, totalEngines, maliciousCount: malCount, suspiciousCount: suspCount, detectionRate: `${(rate*100).toFixed(1)}%` };
+      result.vt.explanation = detectedCount === 0
+        ? `All ${totalEngines} AV engines reported clean.`
+        : `${detectedCount}/${totalEngines} engines flagged (${(rate*100).toFixed(1)}%): ${malCount} malicious, ${suspCount} suspicious.`;
+
+      if (detectedCount === 0) result.positiveFactors.push(`✓ ${totalEngines} AV engines found no threats`);
+      if (detectedCount >= 3)  result.riskFactors.push(`⚠ ${detectedCount}/${totalEngines} AV engines detected threat (${(rate*100).toFixed(1)}%)`);
+      result.dataSourcesCount++;
     }
-  } else {
-    // VirusTotal data completely unavailable - use neutral default
-    scores.vt.score = 50;
-    scores.vt.isAvailable = false;
   }
 
-  // ============================================
-  // 2. MOBSF STATIC ANALYSIS
-  // ============================================
+  // ══════════════════════════════════════════════════════════════
+  // 2. MOBSF STATIC ANALYSIS  (base weight 25%)
+  //    risk = (100 - security_score)
+  //         + penalty for high-risk findings (+3 each, cap 25)
+  //         + penalty for dangerous permissions (tiered)
+  // ══════════════════════════════════════════════════════════════
   if (app.mobsfAnalysis) {
-    const mobsf = app.mobsfAnalysis;
-    const securityScore = mobsf.security_score || 50; // Default to medium if missing
-    const highRiskFindings = mobsf.high_risk_findings || 0;
+    const ms = app.mobsfAnalysis;
+    const secScore = typeof ms.security_score === 'number' ? ms.security_score : 50;
+    const highRisk = ms.high_risk_findings || 0;
+    const dangerousPerms = Array.isArray(ms.dangerous_permissions) ? ms.dangerous_permissions.length : 0;
 
-    // Enhanced scoring: combine security score with findings
-    // Security score: 0-100 (lower = riskier)
-    // High risk findings: each adds to risk
-    let mobsfScore = 0;
+    let staticScore = Math.max(100 - secScore, 5);
+    staticScore += Math.min(highRisk * 3, 25);
 
-    if (securityScore >= 70) {
-      // Low risk: high security score
-      mobsfScore = Map(securityScore, 70, 100, 15, 25) - Math.min(highRiskFindings * 3, 20);
-      scores.mobsfStatic.status = 'SAFE';
-    } else if (securityScore >= 50) {
-      // Medium-low risk
-      mobsfScore = Map(securityScore, 50, 70, 35, 55) + Math.min(highRiskFindings * 2, 15);
-      scores.mobsfStatic.status = 'SUSPICIOUS';
-    } else if (securityScore >= 30) {
-      // Medium-high risk
-      mobsfScore = Map(securityScore, 30, 50, 55, 75) + Math.min(highRiskFindings * 2, 20);
-      scores.mobsfStatic.status = 'SUSPICIOUS';
-    } else {
-      // High risk: low security score
-      mobsfScore = Map(securityScore, 0, 30, 75, 95) + Math.min(highRiskFindings * 2, 20);
-      scores.mobsfStatic.status = 'MALICIOUS';
+    if (dangerousPerms > 0) {
+      const permPenalty = dangerousPerms <= 3 ? dangerousPerms * 4
+        : dangerousPerms <= 7 ? 12 + (dangerousPerms - 3) * 5
+        : 32 + Math.min((dangerousPerms - 7) * 2, 10);
+      staticScore += permPenalty;
     }
+    staticScore = Math.round(Math.min(Math.max(staticScore, 5), 96));
 
-    // Cap the score
-    scores.mobsfStatic.score = Math.min(Math.max(mobsfScore, 10), 95);
-    scores.mobsfStatic.isAvailable = true;
-    scores.mobsfStatic.details = {
-      securityScore: securityScore,
-      highRiskFindings: highRiskFindings
-    };
-    scores.dataSourcesCount++;
-  } else {
-    // MobSF data unavailable
-    scores.mobsfStatic.score = 50; // Neutral default
-    scores.mobsfStatic.isAvailable = false;
+    result.mobsfStatic.score = staticScore;
+    result.mobsfStatic.isAvailable = true;
+    result.mobsfStatic.status = statusFromScore(staticScore);
+    result.mobsfStatic.details = { securityScore: secScore, highRiskFindings: highRisk, dangerousPermissions: dangerousPerms };
+    result.mobsfStatic.explanation = `MobSF score ${secScore}/100 → base risk ${100-secScore}. `
+      + `${highRisk} high-risk finding(s), ${dangerousPerms} dangerous permission(s) → final ${staticScore}.`;
+
+    if (secScore >= 70 && highRisk === 0) result.positiveFactors.push(`✓ MobSF static score ${secScore}/100 — low code-level risk`);
+    if (highRisk > 0)        result.riskFactors.push(`⚠ ${highRisk} high-risk static code finding(s)`);
+    if (dangerousPerms >= 5) result.riskFactors.push(`⚠ ${dangerousPerms} dangerous Android permissions requested`);
+    result.dataSourcesCount++;
   }
 
-  // ============================================
-  // 2.5 MOBSF DYNAMIC ANALYSIS + PERMISSIONS
-  // ============================================
-  // Dynamic analysis combined with dangerous permissions assessment
-  let mobsfDynamicScore = null;
-  let mobsfDynamicStatus = 'UNKNOWN';
-  let dynamicDetails = { available: false, permissionCount: 0, permissionScore: 0 };
-
-  // First, calculate permissions risk score if available
-  let permissionRiskScore = 40; // Default neutral
-  let permissionCount = 0;
-  
-  if (app.mobsfAnalysis && app.mobsfAnalysis.dangerous_permissions) {
-    permissionCount = Array.isArray(app.mobsfAnalysis.dangerous_permissions)
-      ? app.mobsfAnalysis.dangerous_permissions.length
-      : 0;
-    
-    dynamicDetails.permissionCount = permissionCount;
-    
-    // Permissions risk mapping: 0 = 10 (safe), 10+ = 95 (malicious)
-    if (permissionCount === 0) {
-      permissionRiskScore = 10;
-    } else if (permissionCount <= 3) {
-      permissionRiskScore = 20 + (permissionCount * 5);
-    } else if (permissionCount <= 6) {
-      permissionRiskScore = 35 + (permissionCount * 8);
-    } else if (permissionCount <= 10) {
-      permissionRiskScore = 60 + (permissionCount * 3);
-    } else {
-      // 10+ dangerous permissions
-      permissionRiskScore = 75 + Math.min((permissionCount - 10) * 2, 20);
-    }
-    permissionRiskScore = Math.min(Math.max(permissionRiskScore, 10), 95);
-  }
-  
-  dynamicDetails.permissionScore = permissionRiskScore;
-
-  // Check BOTH sources of dynamic data:
-  //  - app.mobsfAnalysis.dynamic_analysis: manifest/network config from static enrichment
-  //  - app.dynamicAnalysis: full runtime pipeline (trackers, TLS, network traffic)
-  const hasMobsfDynamic = !!(app.mobsfAnalysis && app.mobsfAnalysis.dynamic_analysis);
-  const hasRuntimeDynamic = !!(app.dynamicAnalysis && app.dynamicAnalysis.status === 'completed');
+  // ══════════════════════════════════════════════════════════════
+  // 3. MOBSF DYNAMIC ANALYSIS  (base weight 28%)
+  //    Base 10 + additive penalties:
+  //      manifest issues, network config, trackers,
+  //      network security issues, open redirects, excessive domains
+  // ══════════════════════════════════════════════════════════════
+  const hasMobsfDynamic   = !!(app.mobsfAnalysis?.dynamic_analysis);
+  const hasRuntimeDynamic = !!(app.dynamicAnalysis?.status === 'completed');
 
   if (hasMobsfDynamic || hasRuntimeDynamic) {
-    const dyn = hasMobsfDynamic ? app.mobsfAnalysis.dynamic_analysis : {};
+    const dyn     = hasMobsfDynamic   ? app.mobsfAnalysis.dynamic_analysis : {};
     const runtime = hasRuntimeDynamic ? app.dynamicAnalysis : {};
 
-    // Manifest/network config issues (from static enrichment)
-    const manifestScore = Math.min((dyn.high_manifest_issues || 0) * 8 + (dyn.warn_manifest_issues || 0) * 3, 40);
-    const networkConfigScore = Math.min((dyn.high_network_issues || 0) * 10, 30);
+    const highManifest = dyn.high_manifest_issues  || 0;
+    const warnManifest = dyn.warn_manifest_issues  || 0;
+    const highNet      = dyn.high_network_issues   || 0;
+    const trackers     = runtime.trackers               || 0;
+    const netIssues    = runtime.network_security_issues || 0;
+    const openRedirects= runtime.open_redirects          || 0;
+    const domains      = runtime.domains_count           || 0;
 
-    // Runtime behavioral signals (from full dynamic pipeline)
-    const trackers = runtime.trackers || 0;
-    const networkIssues = runtime.network_security_issues || 0;
-    const openRedirects = runtime.open_redirects || 0;
-    // trackers: 12pts each (cap 36) | network issues: 15pts each (cap 30) | redirects: 10pts each (cap 20)
-    const runtimeScore = Math.min(trackers * 12, 36) +
-                         Math.min(networkIssues * 15, 30) +
-                         Math.min(openRedirects * 10, 20);
+    const manifestPenalty  = Math.min(highManifest * 10 + warnManifest * 3, 35);
+    const netConfigPenalty = Math.min(highNet * 12, 30);
+    const trackerPenalty   = Math.min(trackers    * 8,  24);
+    const netIssuePenalty  = Math.min(netIssues   * 14, 28);
+    const redirectPenalty  = Math.min(openRedirects * 10, 20);
+    const domainPenalty    = domains > 20 ? 5 : 0;
 
-    const baseDynamicScore = 10 + manifestScore + networkConfigScore + runtimeScore;
-    // 45% permissions weight + 55% behavioral
-    mobsfDynamicScore = (permissionRiskScore * 0.45) + (Math.min(baseDynamicScore, 95) * 0.55);
-    mobsfDynamicScore = Math.min(Math.max(mobsfDynamicScore, 10), 95);
+    const dynScore = Math.round(Math.min(Math.max(
+      10 + manifestPenalty + netConfigPenalty + trackerPenalty + netIssuePenalty + redirectPenalty + domainPenalty,
+      5), 96));
 
-    dynamicDetails.available = true;
-    dynamicDetails.trackers = trackers;
-    dynamicDetails.highManifestIssues = dyn.high_manifest_issues || 0;
-    dynamicDetails.highNetworkIssues = dyn.high_network_issues || 0;
-    dynamicDetails.runtimeScore = runtimeScore;
+    result.mobsfDynamic.score = dynScore;
+    result.mobsfDynamic.isAvailable = true;
+    result.mobsfDynamic.status = statusFromScore(dynScore);
+    result.mobsfDynamic.details = {
+      highManifestIssues: highManifest, warnManifestIssues: warnManifest,
+      highNetworkConfigIssues: highNet, trackers, networkSecurityIssues: netIssues,
+      openRedirects, domains,
+      penaltyBreakdown: { manifestPenalty, netConfigPenalty, trackerPenalty, netIssuePenalty, redirectPenalty, domainPenalty }
+    };
+    result.mobsfDynamic.explanation = `Base 10 + manifest(+${manifestPenalty}) + netConfig(+${netConfigPenalty}) + trackers(+${trackerPenalty}) + netSec(+${netIssuePenalty}) + redirects(+${redirectPenalty}) + domains(+${domainPenalty}) = ${dynScore}.`;
 
-    if (mobsfDynamicScore < 35) {
-      mobsfDynamicStatus = 'SAFE';
-    } else if (mobsfDynamicScore < 55) {
-      mobsfDynamicStatus = 'SUSPICIOUS';
-    } else {
-      mobsfDynamicStatus = 'MALICIOUS';
-    }
-
-    scores.mobsfDynamic.isAvailable = true;
-    scores.mobsfDynamic.score = mobsfDynamicScore;
-    scores.mobsfDynamic.status = mobsfDynamicStatus;
-    scores.mobsfDynamic.details = dynamicDetails;
-    scores.dataSourcesCount++;
-  } else {
-    scores.mobsfDynamic.isAvailable = false;
-    scores.mobsfDynamic.score = 40;
-    scores.mobsfDynamic.status = 'UNKNOWN';
-    scores.mobsfDynamic.details = dynamicDetails;
+    if (trackers === 0 && netIssues === 0) result.positiveFactors.push(`✓ No trackers or network security issues at runtime`);
+    if (trackers > 0)      result.riskFactors.push(`⚠ ${trackers} advertising/analytics tracker(s) detected at runtime`);
+    if (netIssues > 0)     result.riskFactors.push(`⚠ ${netIssues} network security issue(s) (e.g. cleartext traffic)`);
+    if (openRedirects > 0) result.riskFactors.push(`⚠ ${openRedirects} open redirect(s) detected`);
+    if (highManifest > 0)  result.riskFactors.push(`⚠ ${highManifest} high-severity manifest issue(s)`);
+    result.dataSourcesCount++;
   }
 
-  // ============================================
-  // 4. ML PREDICTION
-  // ============================================
-  if (app.mlPredictionScore !== undefined && app.mlPredictionScore !== null) {
-    const mlScore = parseFloat(app.mlPredictionScore);
-    
-    if (!isNaN(mlScore) && mlScore >= 0 && mlScore <= 1) {
-      // Convert 0-1 scale to 0-100 risk scale with smooth gradient
-      scores.ml.score = 10 + (mlScore * 85);
-      scores.ml.score = Math.min(Math.max(scores.ml.score, 10), 95);
-      scores.ml.isAvailable = true;
-      scores.dataSourcesCount++;
-
-      // Status mapping
-      if (mlScore < 0.3) {
-        scores.ml.status = 'SAFE';
-      } else if (mlScore < 0.6) {
-        scores.ml.status = 'SUSPICIOUS';
-      } else {
-        scores.ml.status = 'MALICIOUS';
-      }
-    } else {
-      // Invalid ML score
-      scores.ml.score = 50;
-      scores.ml.isAvailable = false;
+  // ══════════════════════════════════════════════════════════════
+  // 4. ML PREDICTION  (base weight 7%)
+  //    Probability 0-1 → risk score 8-96
+  //    <0.25 SAFE | 0.25-0.60 SUSPICIOUS | >0.60 MALICIOUS
+  // ══════════════════════════════════════════════════════════════
+  if (app.mlPredictionScore != null) {
+    const mlProb = parseFloat(app.mlPredictionScore);
+    if (!isNaN(mlProb) && mlProb >= 0 && mlProb <= 1) {
+      const mlScore = Math.round(linearMap(mlProb, 0, 1, 8, 96));
+      result.ml.score = mlScore;
+      result.ml.isAvailable = true;
+      result.ml.status = mlProb < 0.25 ? 'SAFE' : mlProb < 0.60 ? 'SUSPICIOUS' : 'MALICIOUS';
+      result.ml.details = { probability: mlProb, label: app.mlPredictionLabel || '—' };
+      result.ml.explanation = `ML maliciousness probability: ${(mlProb*100).toFixed(1)}% → risk score ${mlScore}.`;
+      if (mlProb < 0.25) result.positiveFactors.push(`✓ ML model: low maliciousness probability (${(mlProb*100).toFixed(1)}%)`);
+      if (mlProb > 0.60) result.riskFactors.push(`⚠ ML model: high maliciousness probability (${(mlProb*100).toFixed(1)}%)`);
+      result.dataSourcesCount++;
     }
-  } else {
-    // ML data unavailable
-    scores.ml.score = 50;
-    scores.ml.isAvailable = false;
   }
 
-  // ============================================
-  // DYNAMIC WEIGHT ADJUSTMENT
-  // VT and dynamic analysis are most reliable; ML is least reliable
-  // 4 sources: VT (40%), MobSF Static (28%), MobSF Dynamic (25%), ML (7%)
-  // ============================================
-  const weightConfig = {
-    allAvailable: { vt: 0.40, mobsfStatic: 0.28, mobsfDynamic: 0.25, ml: 0.07 },
-    noML:         { vt: 0.43, mobsfStatic: 0.32, mobsfDynamic: 0.25, ml: 0 },
-    noVT:         { vt: 0,    mobsfStatic: 0.42, mobsfDynamic: 0.35, ml: 0.23 },
-    noMobSFD:     { vt: 0.50, mobsfStatic: 0.38, mobsfDynamic: 0,    ml: 0.12 },
+  // ══════════════════════════════════════════════════════════════
+  // WEIGHT REDISTRIBUTION & FINAL SCORE
+  // ══════════════════════════════════════════════════════════════
+  if (result.dataSourcesCount === 0) {
+    result.finalScore = 50; result.finalStatus = 'UNKNOWN'; result.confidence = 0;
+    result.finalExplanation = 'No analysis data available.';
+    return result;
+  }
+
+  const available = {
+    vt: result.vt.isAvailable, mobsfStatic: result.mobsfStatic.isAvailable,
+    mobsfDynamic: result.mobsfDynamic.isAvailable, ml: result.ml.isAvailable,
   };
+  const weights = redistributeWeights(BASE_WEIGHTS, available);
+  result.vt.weight = weights.vt;
+  result.mobsfStatic.weight = weights.mobsfStatic;
+  result.mobsfDynamic.weight = weights.mobsfDynamic;
+  result.ml.weight = weights.ml;
 
-  let weights = weightConfig.allAvailable;
-
-  // Determine which weight configuration to use
-  if (scores.dataSourcesCount === 0) {
-    // No data available - use conservative defaults
-    scores.finalScore = 50;
-    scores.finalStatus = 'UNKNOWN';
-    scores.confidence = 0;
-    return scores;
-  }
-
-  // Adjust weights based on available sources
-  if (!scores.ml.isAvailable) {
-    weights = weightConfig.noML;
-  } else if (!scores.vt.isAvailable) {
-    weights = weightConfig.noVT;
-  } else if (!scores.mobsfDynamic.isAvailable) {
-    weights = weightConfig.noMobSFD;
-  }
-
-  // ============================================
-  // CALCULATE FINAL WEIGHTED SCORE
-  // ============================================
   let weightedSum = 0;
-  let totalWeight = 0;
+  if (result.vt.isAvailable)          weightedSum += result.vt.score          * weights.vt;
+  if (result.mobsfStatic.isAvailable) weightedSum += result.mobsfStatic.score  * weights.mobsfStatic;
+  if (result.mobsfDynamic.isAvailable)weightedSum += result.mobsfDynamic.score * weights.mobsfDynamic;
+  if (result.ml.isAvailable)          weightedSum += result.ml.score           * weights.ml;
 
-  if (scores.vt.isAvailable) {
-    weightedSum += scores.vt.score * weights.vt;
-    totalWeight += weights.vt;
-  }
-  if (scores.mobsfStatic.isAvailable) {
-    weightedSum += scores.mobsfStatic.score * weights.mobsfStatic;
-    totalWeight += weights.mobsfStatic;
-  }
-  if (scores.mobsfDynamic.isAvailable) {
-    weightedSum += scores.mobsfDynamic.score * weights.mobsfDynamic;
-    totalWeight += weights.mobsfDynamic;
-  }
-  if (scores.ml.isAvailable) {
-    weightedSum += scores.ml.score * weights.ml;
-    totalWeight += weights.ml;
-  }
+  result.finalScore  = Math.round(Math.min(Math.max(weightedSum, 5), 96) * 10) / 10;
+  result.finalStatus = statusFromScore(result.finalScore);
+  result.confidence  = Math.round((result.dataSourcesCount / 4) * 100);
 
-  // Normalize final score
-  scores.finalScore = totalWeight > 0 ? Math.round((weightedSum / totalWeight) * 100) / 100 : 50;
-  scores.finalScore = Math.min(Math.max(scores.finalScore, 10), 95);
+  const sourceStr = `${result.dataSourcesCount}/4 sources`;
+  result.finalExplanation = result.finalStatus === 'MALICIOUS'
+    ? `Risk score ${result.finalScore}/100 based on ${sourceStr}. This APK exhibits characteristics consistent with malware — immediate review recommended.`
+    : result.finalStatus === 'SUSPICIOUS'
+    ? `Risk score ${result.finalScore}/100 based on ${sourceStr}. Suspicious behaviour detected — manual inspection recommended before allowing on devices.`
+    : `Risk score ${result.finalScore}/100 based on ${sourceStr}. No significant threats identified across available analysis sources.`;
 
-  // ============================================
-  // CONFIDENCE SCORING (0-100%)
-  // Higher confidence = more data sources available (4 sources max)
-  // ============================================
-  scores.confidence = Math.round((scores.dataSourcesCount / 4) * 100);
-
-  // ============================================
-  // CLASSIFY APP STATUS
-  // SAFE < 30 | SUSPICIOUS 30-49 | MALICIOUS >= 50
-  // ============================================
-  if (scores.finalScore < 30) {
-    scores.finalStatus = 'SAFE';
-  } else if (scores.finalScore < 50) {
-    scores.finalStatus = 'SUSPICIOUS';
-  } else {
-    scores.finalStatus = 'MALICIOUS';
-  }
-
-  // Store breakdown for transparency
-  scores.breakdown = {
+  result.breakdown = {
     sources: {
-      virustotal: scores.vt.isAvailable ? scores.vt.score : null,
-      mobsfStatic: scores.mobsfStatic.isAvailable ? scores.mobsfStatic.score : null,
-      mobsfDynamic: scores.mobsfDynamic.isAvailable ? scores.mobsfDynamic.score : null,
-      ml: scores.ml.isAvailable ? scores.ml.score : null,
-    },
-    sourceDetails: {
-      virustotal: scores.vt.details,
-      mobsfStatic: scores.mobsfStatic.details,
-      mobsfDynamic: scores.mobsfDynamic.details,
-      ml: scores.ml.details,
+      virustotal:   result.vt.isAvailable          ? result.vt.score          : null,
+      mobsfStatic:  result.mobsfStatic.isAvailable  ? result.mobsfStatic.score  : null,
+      mobsfDynamic: result.mobsfDynamic.isAvailable ? result.mobsfDynamic.score : null,
+      ml:           result.ml.isAvailable           ? result.ml.score           : null,
     },
     weights: {
-      virustotal: weights.vt,
-      mobsfStatic: weights.mobsfStatic,
+      virustotal:   weights.vt,
+      mobsfStatic:  weights.mobsfStatic,
       mobsfDynamic: weights.mobsfDynamic,
-      ml: weights.ml,
+      ml:           weights.ml,
+    },
+    explanations: {
+      virustotal:   result.vt.explanation,
+      mobsfStatic:  result.mobsfStatic.explanation,
+      mobsfDynamic: result.mobsfDynamic.explanation,
+      ml:           result.ml.explanation,
+    },
+    details: {
+      virustotal:   result.vt.details,
+      mobsfStatic:  result.mobsfStatic.details,
+      mobsfDynamic: result.mobsfDynamic.details,
+      ml:           result.ml.details,
     }
   };
 
-  return scores;
+  return result;
 }
 
 /**
- * Helper function: Linear mapping function
- * Maps value from [inMin, inMax] range to [outMin, outMax] range
+ * Legacy alias kept for backward compatibility
  */
 function Map(value, inMin, inMax, outMin, outMax) {
-  return outMin + (value - inMin) * (outMax - outMin) / (inMax - inMin);
+  return linearMap(value, inMin, inMax, outMin, outMax);
 }
 
-module.exports = { calculateWeightedRiskScore, Map };
+module.exports = { calculateWeightedRiskScore, Map, linearMap };

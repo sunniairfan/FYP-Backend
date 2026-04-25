@@ -12,7 +12,7 @@ const analysisRequestRoutes = require("./routes/analysisRequestRoutes");
 const authRoutes = require("./routes/authRoutes");
 const { ensureAdminAuthIndices } = require("./utils/adminAuth");
 
-dotenv.config();
+const { requireAdminSession } = require("./middleware/authAccess");
 const app = express();
 const PORT = process.env.PORT || 5000;
 // Set up session for user authentication
@@ -123,9 +123,9 @@ app.use("/dashboard", dashboardRoutes); // Web dashboard routes
 app.use("/uploadapp", uploadAppRoutes); // Upload app routes 
 app.use("/results", resultsRoutes); // Analysis results page routes
 
-// Main dashboard page
-app.get("/", (req, res) => {
-  const displayName = String(req.session?.user?.name || req.session?.username || "User");
+// Main homepage (protected – redirect to /login if not authenticated)
+app.get("/", requireAdminSession, (req, res) => {
+  const displayName = String(req.session?.user?.name || req.jwtUser?.name || "User");
   const avatarInitial = displayName.charAt(0).toUpperCase();
   res.send(`
     <!DOCTYPE html>

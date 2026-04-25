@@ -512,7 +512,27 @@ const requestPasswordResetOrConfirmDelete = async (esClient, email) => {
     },
   });
 
-  return { ok: true, code, email: normalizedEmail };
+  // Send confirmation code via email
+  try {
+    const emailResult = await sendVerificationCodeEmail({
+      to: normalizedEmail,
+      name: user._source.name,
+      code,
+      purpose: "delete_account",
+    });
+    if (emailResult.fallback) {
+      console.log(`🔑 [DEV] Delete confirmation code for ${normalizedEmail}: ${code}`);
+    }
+  } catch (emailErr) {
+    console.error("Failed to send delete confirmation email:", emailErr.message);
+  }
+
+  const devMode = String(process.env.ALLOW_EMAIL_CONSOLE_FALLBACK || "false") === "true";
+  return {
+    ok: true,
+    email: normalizedEmail,
+    ...(devMode ? { code } : {}),
+  };
 };
 
 const verifyDeleteCode = async (esClient, { email, code }) => {
@@ -562,6 +582,7 @@ const requestForgotPasswordCode = async (esClient, email) => {
 
   const user = await getAdminByEmail(esClient, normalizedEmail);
   if (!user?._source || user._source.status === "deleted") {
+    // Generic message to avoid account enumeration
     return { ok: false, error: "Account not found" };
   }
 
@@ -587,7 +608,38 @@ const requestForgotPasswordCode = async (esClient, email) => {
     },
   });
 
-  return { ok: true, code, email: normalizedEmail, name: user._source.name };
+  // Send verification code via email
+  let emailSent = false;
+  try {
+    const emailResult = await sendVerificationCodeEmail({
+      to: normalizedEmail,
+      name: user._source.name,
+      code,
+      purpose: "password_reset",
+    });
+    emailSent = !emailResult.fallback;
+    if (emailResult.fallback) {
+      console.log(`🔑 [DEV] Password reset code for ${normalizedEmail}: ${code}`);
+    }
+  } catch (emailErr) {
+    console.error("Failed to send password reset email:", emailErr.message);
+    // If email fails entirely and fallback is disabled, surface the error
+    const fallbackAllowed = String(process.env.ALLOW_EMAIL_CONSOLE_FALLBACK || "false") === "true";
+    if (!fallbackAllowed) {
+      return { ok: false, error: "Failed to send verification email. Please check SMTP configuration." };
+    }
+    console.log(`🔑 [DEV] Password reset code for ${normalizedEmail}: ${code}`);
+  }
+
+  // Only expose the code in development/fallback mode (never in production)
+  const devMode = String(process.env.ALLOW_EMAIL_CONSOLE_FALLBACK || "false") === "true";
+  return {
+    ok: true,
+    email: normalizedEmail,
+    name: user._source.name,
+    emailSent,
+    ...(devMode ? { devCode: code } : {}),
+  };
 };
 
 const verifyForgotPasswordCodeAndReset = async (esClient, { email, code, newPassword }) => {
