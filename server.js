@@ -140,69 +140,84 @@ app.get("/", requireAdminSession, (req, res) => {
           box-sizing: border-box;
         }
         body {
-          background: #0a192f;
+          background: #05090f;
           color: #94a3b8;
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
           min-height: 100vh;
           display: flex;
         }
         .sidebar {
-          width: 200px;
-          background: #112240;
+          width: 240px;
+          background: #0b1120;
           height: 100vh;
-          padding: 20px 0;
+          padding: 0;
           display: flex;
           flex-direction: column;
           position: fixed;
-          left: -200px;
+          left: -240px;
           top: 0;
-          transition: left 0.3s ease;
+          transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
           z-index: 1000;
-          box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);
+          box-shadow: 4px 0 24px rgba(0, 0, 0, 0.6);
+          border-right: 1px solid #1a2332;
         }
         .sidebar.open {
           left: 0;
         }
         .logo {
-          padding: 0 18px 25px;
+          padding: 22px 20px;
           display: flex;
           align-items: center;
           gap: 12px;
           color: white;
-          font-weight: 600;
-          font-size: 17px;
-          border-bottom: 1px solid #1d3557;
-          margin-bottom: 20px;
+          font-weight: 700;
+          font-size: 16px;
+          border-bottom: 1px solid #1a2332;
+          letter-spacing: 0.5px;
         }
         .logo-icon {
-          width: 32px;
-          height: 32px;
-          background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); border-radius: 8px;
+          width: 38px;
+          height: 38px;
+          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+          border-radius: 10px;
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 16px;
+          font-size: 18px;
           color: white;
+          box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);
+        }
+        .nav-section-title {
+          padding: 20px 20px 8px;
+          color: #475569;
+          font-size: 10px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 1.2px;
         }
         .nav-item {
-          padding: 12px 18px;
+          padding: 11px 20px;
           color: #94a3b8;
           text-decoration: none;
           display: flex;
           align-items: center;
-          gap: 12px;
-          transition: all 0.2s;
+          gap: 14px;
+          transition: all 0.2s ease;
           font-size: 14px;
           cursor: pointer;
+          border-left: 3px solid transparent;
+          margin: 1px 0;
         }
         .nav-item:hover {
-          background: #1d3557;
-          color: white;
+          background: rgba(59, 130, 246, 0.08);
+          color: #e2e8f0;
+          border-left-color: rgba(59, 130, 246, 0.3);
         }
         .nav-item.active {
-          background: #000000;
-          color: white;
-          border-left: 3px solid #2563eb;
+          background: rgba(59, 130, 246, 0.15);
+          color: #60a5fa;
+          border-left-color: #3b82f6;
+          font-weight: 600;
         }
         .nav-icon {
           width: 20px;
@@ -211,19 +226,19 @@ app.get("/", requireAdminSession, (req, res) => {
         }
         .logout-nav {
           margin-top: auto;
-          padding: 12px 18px;
-          color: #ef4444;
+          padding: 14px 20px;
+          color: #f87171;
           text-decoration: none;
           display: flex;
           align-items: center;
-          gap: 12px;
-          transition: all 0.2s;
+          gap: 14px;
+          transition: all 0.2s ease;
           font-size: 14px;
-          border-top: 1px solid #1d3557;
+          border-top: 1px solid #1a2332;
         }
         .logout-nav:hover {
-          background: #7f1d1d;
-          color: white;
+          background: rgba(239, 68, 68, 0.15);
+          color: #fca5a5;
         }
         .main-content {
           flex: 1;
@@ -231,7 +246,7 @@ app.get("/", requireAdminSession, (req, res) => {
           transition: margin-left 0.3s ease;
         }
         .sidebar.open ~ .main-content {
-          margin-left: 200px;
+          margin-left: 240px;
         }
         .overlay {
           display: none;
@@ -240,19 +255,24 @@ app.get("/", requireAdminSession, (req, res) => {
           left: 0;
           width: 100%;
           height: 100%;
-          background: rgba(0, 0, 0, 0.5);
+          background: rgba(0, 0, 0, 0.7);
           z-index: 999;
+          backdrop-filter: blur(2px);
         }
         .overlay.show {
           display: block;
         }
         .top-bar {
-          background: #112240;
-          padding: 8px 20px;
+          background: #0b1120;
+          padding: 12px 24px;
           display: flex;
           justify-content: space-between;
           align-items: center;
-          border-bottom: 1px solid #1d3557;
+          border-bottom: 1px solid #1a2332;
+          box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+          position: sticky;
+          top: 0;
+          z-index: 100;
         }
         .top-actions {
           display: flex;
@@ -262,50 +282,70 @@ app.get("/", requireAdminSession, (req, res) => {
         .notification-bell {
           position: relative;
           background: transparent;
-          border: none;
+          border: 1px solid #1a2332;
           color: #94a3b8;
           cursor: pointer;
-          font-size: 18px;
-          padding: 6px 8px;
-          transition: color 0.2s;
+          font-size: 16px;
+          padding: 8px 10px;
+          transition: all 0.2s ease;
+          border-radius: 8px;
         }
         .notification-bell:hover {
           color: white;
+          background: rgba(59, 130, 246, 0.1);
+          border-color: rgba(59, 130, 246, 0.3);
         }
         .notification-badge {
           position: absolute;
-          top: 2px;
-          right: 2px;
+          top: -4px;
+          right: -4px;
           background: #ef4444;
           color: white;
-          border-radius: 10px;
+          border-radius: 12px;
           font-size: 10px;
-          padding: 2px 5px;
+          padding: 3px 6px;
           line-height: 1;
-          min-width: 16px;
+          min-width: 18px;
           text-align: center;
           display: none;
+          font-weight: 700;
+          box-shadow: 0 2px 8px rgba(239, 68, 68, 0.4);
         }
         .notification-panel {
-          position: absolute;
-          right: 10px;
-          top: 50px;
-          background: #0f172a;
-          border: 1px solid #1d3557;
-          border-radius: 8px;
-          width: 340px;
-          max-height: 400px;
+          position: fixed;
+          right: 16px;
+          top: 62px;
+          background: #0b1120;
+          border: 1px solid #1e3a66;
+          border-radius: 12px;
+          width: 380px;
+          max-height: 450px;
           overflow-y: auto;
-          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+          box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
           display: none;
           z-index: 1001;
         }
         .notification-panel.show {
           display: block;
         }
+        .notification-panel-header {
+          padding: 14px 18px;
+          border-bottom: 1px solid #1a2332;
+          font-size: 13px;
+          font-weight: 700;
+          color: #e2e8f0;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
         .notification-item {
-          padding: 12px 14px;
-          border-bottom: 1px solid #1d3557;
+          padding: 14px 18px;
+          border-bottom: 1px solid #1a2332;
+          transition: background 0.15s ease;
+          cursor: default;
+        }
+        .notification-item:hover {
+          background: rgba(59, 130, 246, 0.05);
         }
         .notification-item:last-child {
           border-bottom: none;
@@ -314,25 +354,28 @@ app.get("/", requireAdminSession, (req, res) => {
           font-size: 13px;
           color: #f87171;
           font-weight: 600;
-          margin-bottom: 4px;
+          margin-bottom: 5px;
+          display: flex;
+          align-items: center;
+          gap: 6px;
         }
         .notification-meta {
-          font-size: 11px;
+          font-size: 12px;
           color: #94a3b8;
-          line-height: 1.4;
+          line-height: 1.5;
         }
         .notification-popup {
           position: fixed;
           right: 20px;
-          top: 70px;
-          background: #111827;
+          top: 72px;
+          background: #0b1120;
           border: 1px solid #ef4444;
-          border-radius: 10px;
-          padding: 14px 16px;
-          width: 320px;
+          border-radius: 12px;
+          padding: 16px 18px;
+          width: 360px;
           display: none;
           z-index: 2000;
-          box-shadow: 0 12px 28px rgba(239, 68, 68, 0.3);
+          box-shadow: 0 16px 40px rgba(239, 68, 68, 0.35);
         }
         .notification-popup.show {
           display: block;
@@ -340,65 +383,77 @@ app.get("/", requireAdminSession, (req, res) => {
         .popup-title {
           color: #f87171;
           font-weight: 700;
-          font-size: 14px;
-          margin-bottom: 6px;
+          font-size: 15px;
+          margin-bottom: 8px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
         }
         .popup-body {
-          color: #e2e8f0;
-          font-size: 12px;
-          line-height: 1.5;
+          color: #cbd5e1;
+          font-size: 13px;
+          line-height: 1.6;
         }
         .popup-close {
-          margin-top: 10px;
-          background: #1f2937;
-          color: #e2e8f0;
-          border: 1px solid #374151;
-          border-radius: 6px;
-          padding: 6px 10px;
+          margin-top: 12px;
+          background: rgba(59, 130, 246, 0.1);
+          color: #94a3b8;
+          border: 1px solid rgba(59, 130, 246, 0.3);
+          border-radius: 8px;
+          padding: 8px 14px;
           font-size: 12px;
           cursor: pointer;
+          transition: all 0.2s ease;
+          font-weight: 600;
+        }
+        .popup-close:hover {
+          background: rgba(59, 130, 246, 0.2);
+          color: #e2e8f0;
         }
         .menu-toggle {
           background: transparent;
           border: none;
           color: #94a3b8;
-          font-size: 18px;
+          font-size: 19px;
           cursor: pointer;
-          padding: 4px 6px;
+          padding: 6px 8px;
           display: flex;
           align-items: center;
-          transition: color 0.2s;
+          transition: all 0.2s ease;
+          border-radius: 8px;
         }
         .menu-toggle:hover {
           color: white;
+          background: rgba(59, 130, 246, 0.1);
         }
         .user-info {
           display: flex;
           align-items: center;
-          gap: 10px;
+          gap: 12px;
           color: #e2e8f0;
-          font-size: 14px;
+          font-size: 13.5px;
           font-weight: 500;
         }
         .user-avatar {
-          width: 32px;
-          height: 32px;
-          background: #3a3a3a;
+          width: 34px;
+          height: 34px;
+          background: linear-gradient(135deg, #3b82f6, #2563eb);
           border-radius: 50%;
           display: flex;
           align-items: center;
           justify-content: center;
           color: white;
-          font-weight: 600;
+          font-weight: 700;
           font-size: 14px;
+          box-shadow: 0 2px 10px rgba(59, 130, 246, 0.3);
         }
         .content-area {
-          padding: 60px;
+          padding: 40px 60px 50px;
           display: flex;
           flex-direction: column;
           align-items: center;
           justify-content: center;
-          min-height: calc(100vh - 49px);
+          min-height: calc(100vh - 58px);
         }
         .hero-section {
           text-align: center;
@@ -406,66 +461,92 @@ app.get("/", requireAdminSession, (req, res) => {
         }
         .main-title {
           font-size: 2.2em;
-          color: white;
-          font-weight: 700;
-          letter-spacing: 0.5px;
-          margin-bottom: 18px;
+          color: #f1f5f9;
+          font-weight: 600;
+          letter-spacing: -0.3px;
+          margin-bottom: 14px;
           line-height: 1.2;
+          text-transform: uppercase;
+          background: linear-gradient(135deg, #f1f5f9, #94a3b8);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
         }
         .subtitle {
-          font-size: 1.1em;
+          font-size: 1.05em;
           color: #64748b;
-          margin-bottom: 60px;
-          font-weight: 400;
+          margin-bottom: 45px;
+          font-weight: 500;
+          letter-spacing: 0.3px;
         }
         .button-grid {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-          gap: 24px;
+          gap: 20px;
           width: 100%;
           max-width: 1000px;
           margin: 0 auto;
         }
         .action-card {
-          background: #112240;
-          border: 1px solid #1d3557;
-          border-radius: 12px;
-          padding: 35px;
+          background: linear-gradient(135deg, #0f1729 0%, #0b1120 100%);
+          border: 1px solid #1a2332;
+          border-radius: 14px;
+          padding: 32px;
           text-decoration: none;
           display: flex;
           flex-direction: column;
           align-items: flex-start;
           gap: 14px;
-          transition: all 0.3s;
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
           cursor: pointer;
+          position: relative;
+          overflow: hidden;
+        }
+        .action-card::before {
+          content: '';
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          height: 3px;
+          background: linear-gradient(90deg, #3b82f6, #2563eb);
+          opacity: 0;
+          transition: opacity 0.3s ease;
         }
         .action-card:hover {
-          border-color: #2563eb;
-          transform: translateY(-3px);
-          box-shadow: 0 12px 28px rgba(37, 99, 235, 0.3);
-          background: #1d3557;
+          border-color: rgba(59, 130, 246, 0.5);
+          transform: translateY(-5px);
+          box-shadow: 0 16px 40px rgba(59, 130, 246, 0.2);
+          background: linear-gradient(135deg, #131e35 0%, #0f1729 100%);
+        }
+        .action-card:hover::before {
+          opacity: 1;
         }
         .card-icon {
-          width: 48px;
-          height: 48px;
-          background: #3a3a3a;
-          border-radius: 10px;
+          width: 54px;
+          height: 54px;
+          background: linear-gradient(135deg, rgba(59, 130, 246, 0.15), rgba(37, 99, 235, 0.1));
+          border: 1px solid rgba(59, 130, 246, 0.3);
+          border-radius: 12px;
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 20px;
-          color: white;
+          font-size: 22px;
+          color: #60a5fa;
         }
         .card-title {
-          font-size: 1.15em;
-          color: white;
-          font-weight: 600;
+          font-size: 1.2em;
+          color: #f1f5f9;
+          font-weight: 700;
           margin-top: 4px;
+          letter-spacing: -0.2px;
+          text-align: left;
         }
         .card-desc {
-          font-size: 0.9em;
+          font-size: 0.92em;
           color: #64748b;
-          line-height: 1.5;
+          line-height: 1.6;
+          text-align: left;
         }
       </style>
     </head>
@@ -475,25 +556,34 @@ app.get("/", requireAdminSession, (req, res) => {
           <div class="logo-icon"><i class="fas fa-shield-alt"></i></div>
           <span>CYBER WOLF</span>
         </div>
+        
+        <div class="nav-section-title">NAVIGATION</div>
         <a href="/" class="nav-item active">
           <i class="fas fa-home nav-icon"></i>
           <span>Home</span>
         </a>
         <a href="/dashboard" class="nav-item">
           <i class="fas fa-chart-line nav-icon"></i>
-          <span>Dashboard</span>
+          <span>Security Dashboard</span>
         </a>
         <a href="/uploadapp/apps" class="nav-item">
           <i class="fas fa-mobile-alt nav-icon"></i>
           <span>App Manager</span>
         </a>
+        <a href="/results" class="nav-item">
+          <i class="fas fa-file-alt nav-icon"></i>
+          <span>Analysis Results</span>
+        </a>
+        
+        <div class="nav-section-title" style="margin-top: 12px;">SYSTEM</div>
         <a href="#" class="nav-item">
           <i class="fas fa-cog nav-icon"></i>
           <span>Settings</span>
         </a>
+        
         <a href="/logout" class="logout-nav">
           <i class="fas fa-sign-out-alt nav-icon"></i>
-          <span>Logout</span>
+          <span>Sign Out</span>
         </a>
       </div>
       
@@ -516,9 +606,9 @@ app.get("/", requireAdminSession, (req, res) => {
 
         <div class="notification-panel" id="notificationPanel"></div>
         <div class="notification-popup" id="notificationPopup">
-          <div class="popup-title">High malware detection</div>
-          <div class="popup-body" id="popupBody">A high-risk app was detected. Uninstall recommended.</div>
-          <button class="popup-close" id="popupClose">Close</button>
+          <div class="popup-title"><i class="fas fa-exclamation-triangle"></i>High Risk Detected</div>
+          <div class="popup-body" id="popupBody">A high-risk app was detected. Immediate action recommended.</div>
+          <button class="popup-close" id="popupClose">Dismiss</button>
         </div>
         
         <div class="content-area">
@@ -530,19 +620,19 @@ app.get("/", requireAdminSession, (req, res) => {
               <a href="/dashboard" class="action-card">
                 <div class="card-icon"><i class="fas fa-chart-line"></i></div>
                 <div class="card-title">Security Dashboard</div>
-                <div class="card-desc">Real-time threat analysis & monitoring</div>
+                <div class="card-desc">Real-time threat monitoring & detection insights</div>
               </a>
               
               <a href="/uploadapp/apps" class="action-card">
                 <div class="card-icon"><i class="fas fa-mobile-alt"></i></div>
                 <div class="card-title">App Manager</div>
-                <div class="card-desc">Upload & analyze APK files</div>
+                <div class="card-desc">Upload & analyze Android APK files</div>
               </a>
               
               <a href="/results" class="action-card">
                 <div class="card-icon"><i class="fas fa-file-alt"></i></div>
                 <div class="card-title">Analysis Results</div>
-                <div class="card-desc">View detailed app analysis & reports</div>
+                <div class="card-desc">Detailed reports & comprehensive analysis</div>
               </a>
             </div>
           </div>
@@ -585,19 +675,22 @@ app.get("/", requireAdminSession, (req, res) => {
         }
 
         function renderNotifications(items) {
+          const header = '<div class="notification-panel-header"><i class="fas fa-bell" style="color:#f87171;"></i>Threat Alerts</div>';
           if (!items.length) {
-            notificationPanel.innerHTML = '<div class="notification-item"><div class="notification-meta">No notifications yet.</div></div>';
+            notificationPanel.innerHTML = header + '<div class="notification-item"><div class="notification-meta">No active alerts.</div></div>';
             return;
           }
-          notificationPanel.innerHTML = items.map((item) => {
+          notificationPanel.innerHTML = header + items.map((item) => {
             const appLabel = item.appName || item.packageName || 'Unknown app';
             const ratio = item.detectionRatio || 'N/A';
             const when = item.createdAt ? new Date(item.createdAt).toLocaleString() : '';
+            const title = item.title || 'Alert';
+            const showIcon = title.toLowerCase().includes('alert') || title.toLowerCase().includes('malicious');
             return (
               '<div class="notification-item">' +
-                '<div class="notification-title">' + (item.title || 'Alert') + '</div>' +
-                '<div class="notification-meta">' + appLabel + ' · ' + ratio + ' · ' + when + '</div>' +
-                '<div class="notification-meta">' + (item.message || '') + '</div>' +
+                '<div class="notification-title">' + (showIcon ? '<i class="fas fa-exclamation-triangle" style="color:#ef4444;"></i>' : '') + title + '</div>' +
+                '<div class="notification-meta">' + appLabel + ' &middot; ' + ratio + '</div>' +
+                '<div class="notification-meta" style="margin-top:3px;">' + when + '</div>' +
               '</div>'
             );
           }).join('');

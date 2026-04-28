@@ -498,14 +498,14 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
     });
 
     if (searchRes.hits.hits.length === 0) {
-      return res.status(404).send('<html><body style="background:#060b14;color:white;font-family:Arial;text-align:center;padding:50px"><h1>App not found</h1><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
+      return res.status(404).send('<html><body style="background:#05090f;color:white;font-family:Arial;text-align:center;padding:50px"><h1>App not found</h1><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
     }
 
     const appData = searchRes.hits.hits[0]._source;
     const vt = appData.virusTotalAnalysis;
 
     if (!vt) {
-      return res.status(400).send('<html><body style="background:#060b14;color:white;font-family:Arial;text-align:center;padding:50px"><h1>⚠️ No VirusTotal analysis available</h1><p style="color:#94a3b8">Run VirusTotal analysis from the app details page first.</p><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
+      return res.status(400).send('<html><body style="background:#05090f;color:white;font-family:Arial;text-align:center;padding:50px"><h1>⚠️ No VirusTotal analysis available</h1><p style="color:#94a3b8">Run VirusTotal analysis from the app details page first.</p><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
     }
 
     // ── Data extraction ──────────────────────────────────────────────────────
@@ -589,7 +589,7 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
   <title>VirusTotal — ${esc(appData.appName || appData.packageName)}</title>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-    body{background:#060b14;color:#cbd5e1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;padding:20px 16px}
+    body{background:#05090f;color:#cbd5e1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;padding:20px 16px}
     a{color:#3b82f6;text-decoration:none}a:hover{text-decoration:underline}
     .wrap{max-width:1100px;margin:0 auto}
     .topbar{display:flex;align-items:center;gap:12px;margin-bottom:22px;flex-wrap:wrap}
@@ -598,8 +598,8 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
     .page-title{font-size:20px;font-weight:700;color:#f1f5f9}
     .page-sub{font-size:12px;color:#64748b;margin-top:3px}
     /* Cards */
-    .card{background:#0f172a;border:1px solid #1e293b;border-radius:12px;padding:18px 20px;margin-bottom:14px;overflow:hidden}
-    .card-hdr{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid #1e293b}
+    .card{background:#0b1120;border:1px solid #1a2332;border-radius:12px;padding:18px 20px;margin-bottom:14px;overflow:hidden}
+    .card-hdr{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid #1a2332}
     .card-icon{font-size:18px;width:32px;height:32px;background:#0f2040;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
     .card-title{font-size:13px;font-weight:600;color:#e2e8f0;text-transform:uppercase;letter-spacing:.05em}
     .card-sub{margin-left:auto;font-size:11px;color:#64748b}
@@ -609,7 +609,7 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
     .verdict-desc{font-size:13px;line-height:1.6;flex:1}
     /* Stats grid */
     .stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
-    .stat-card{background:#060b14;border:1px solid #1e293b;border-radius:10px;padding:14px;text-align:center}
+    .stat-card{background:#05090f;border:1px solid #1a2332;border-radius:10px;padding:14px;text-align:center}
     .stat-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
     .stat-val{font-size:26px;font-weight:700;line-height:1}
     .sv-red{color:#ef4444}.sv-yellow{color:#f59e0b}.sv-green{color:#22c55e}.sv-blue{color:#3b82f6}.sv-gray{color:#94a3b8}
@@ -892,7 +892,7 @@ function showTab(id, el) {
     res.send(html);
   } catch (err) {
     console.error("[VT Results] Error:", err.message);
-    res.status(500).send(`<html><body style="background:#060b14;color:white;font-family:Arial;padding:40px"><h1>Error</h1><p>${err.message}</p><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>`);
+    res.status(500).send(`<html><body style="background:#05090f;color:white;font-family:Arial;padding:40px"><h1>Error</h1><p>${err.message}</p><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>`);
   }
 });
 
@@ -985,7 +985,7 @@ router.get("/results/:sha256", requireWebAuth, async (req, res) => {
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { 
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: linear-gradient(135deg, #0a192f 0%, #1b3a52 100%); color: #cbd5e1; min-height: 100vh; padding: 30px 20px;
+      background: #05090f; color: #cbd5e1; min-height: 100vh; padding: 30px 20px;
     }
     .container { max-width: 1200px; margin: 0 auto; }
     .back-btn { 
@@ -1002,12 +1002,11 @@ router.get("/results/:sha256", requireWebAuth, async (req, res) => {
     .back-btn:hover { background: #334155; border-color: #90e0ef; }
     
     .header {
-      background: rgba(30, 41, 59, 0.8);
-      border: 1px solid #334155;
+      background: #0b1120;
+      border: 1px solid #1a2332;
       border-radius: 10px;
       padding: 30px;
       margin-bottom: 30px;
-      backdrop-filter: blur(10px);
     }
     .app-name { font-size: 32px; font-weight: 700; margin-bottom: 10px; color: #f1f5f9; }
     .app-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-top: 20px; }
@@ -1304,7 +1303,7 @@ router.get("/results/:sha256", requireWebAuth, async (req, res) => {
     res.send(html);
   } catch (err) {
     console.error("Failed to load results:", err.message);
-    res.status(500).send(`<html><body style="background:#0a192f;color:white;text-align:center;padding:50px"><h1>❌ Error</h1><p>\${err.message}</p><a href="/uploadapp/apps" style="color:#90e0ef">← Back</a></body></html>`);
+    res.status(500).send(`<html><body style="background:#05090f;color:white;text-align:center;padding:50px"><h1>❌ Error</h1><p>\${err.message}</p><a href="/uploadapp/apps" style="color:#90e0ef">← Back</a></body></html>`);
   }
 });
 
@@ -1362,7 +1361,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           
           body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-            background: #0a192f;
+            background: #05090f;
             color: #94a3b8;
             min-height: 100vh;
             display: flex;
@@ -1372,18 +1371,19 @@ router.get("/apps", requireWebAuth, async (req, res) => {
 
           /* Sidebar styles */
           .sidebar {
-            width: 200px;
-            background: #112240;
+            width: 240px;
+            background: #0b1120;
             height: 100vh;
-            padding: 20px 0;
+            padding: 0;
             display: flex;
             flex-direction: column;
             position: fixed;
-            left: -200px;
+            left: -240px;
             top: 0;
+            transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
             z-index: 1000;
-            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);
-            transition: left 0.3s ease;
+            box-shadow: 4px 0 24px rgba(0, 0, 0, 0.6);
+            border-right: 1px solid #1a2332;
           }
 
           .sidebar.open {
@@ -1391,49 +1391,64 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           }
 
           .logo {
-            padding: 0 18px 25px;
+            padding: 22px 20px;
             display: flex;
             align-items: center;
             gap: 12px;
             color: white;
-            font-weight: 600;
-            font-size: 17px;
-            border-bottom: 1px solid #1d3557;
-            margin-bottom: 20px;
+            font-weight: 700;
+            font-size: 16px;
+            border-bottom: 1px solid #1a2332;
+            letter-spacing: 0.5px;
           }
 
           .logo-icon {
-            width: 32px;
-            height: 32px;
-            background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); border-radius: 8px;
+            width: 38px;
+            height: 38px;
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            border-radius: 10px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 16px;
+            font-size: 18px;
             color: white;
+            box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);
+          }
+
+          .nav-section-title {
+            padding: 20px 20px 8px;
+            color: #475569;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
           }
 
           .nav-item {
-            padding: 12px 18px;
+            padding: 11px 20px;
             color: #94a3b8;
             text-decoration: none;
             display: flex;
             align-items: center;
-            gap: 12px;
-            transition: all 0.2s;
+            gap: 14px;
+            transition: all 0.2s ease;
             font-size: 14px;
             cursor: pointer;
+            border-left: 3px solid transparent;
+            margin: 1px 0;
           }
 
           .nav-item:hover {
-            background: #1d3557;
-            color: white;
+            background: rgba(59, 130, 246, 0.08);
+            color: #e2e8f0;
+            border-left-color: rgba(59, 130, 246, 0.3);
           }
 
           .nav-item.active {
-            background: #000000;
-            color: white;
-            border-left: 3px solid #2563eb;
+            background: rgba(59, 130, 246, 0.15);
+            color: #60a5fa;
+            border-left-color: #3b82f6;
+            font-weight: 600;
           }
 
           .nav-icon {
@@ -1444,20 +1459,20 @@ router.get("/apps", requireWebAuth, async (req, res) => {
 
           .logout-nav {
             margin-top: auto;
-            padding: 12px 18px;
-            color: #ef4444;
+            padding: 14px 20px;
+            color: #f87171;
             text-decoration: none;
             display: flex;
             align-items: center;
-            gap: 12px;
-            transition: all 0.2s;
+            gap: 14px;
+            transition: all 0.2s ease;
             font-size: 14px;
-            border-top: 1px solid #1d3557;
+            border-top: 1px solid #1a2332;
           }
 
           .logout-nav:hover {
-            background: #7f1d1d;
-            color: white;
+            background: rgba(239, 68, 68, 0.15);
+            color: #fca5a5;
           }
 
           /* Main content */
@@ -1470,8 +1485,8 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             transform: none;
           }
 
-          .main-content.shifted {
-            margin-left: 200px;
+          .sidebar.open ~ .main-content {
+            margin-left: 240px;
           }
 
           .menu-btn {
@@ -1498,8 +1513,13 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(0, 0, 0, 0.5);
+            background: rgba(0, 0, 0, 0.7);
             z-index: 999;
+            backdrop-filter: blur(2px);
+          }
+
+          .overlay.show {
+            display: block;
           }
 
           .overlay.active {
@@ -1507,12 +1527,12 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           }
 
           .top-bar {
-            background: #112240;
+            background: #0b1120;
             padding: 8px 15px 8px 8px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 1px solid #1d3557;
+            border-bottom: 1px solid #1a2332;
           }
 
           .user-info {
@@ -2047,21 +2067,25 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             <span>CYBER WOLF</span>
           </div>
           
+          <div class="nav-section-title">NAVIGATION</div>
           <a href="/" class="nav-item">
             <i class="fas fa-home nav-icon"></i>
             <span>Home</span>
           </a>
-          
           <a href="/dashboard" class="nav-item">
             <i class="fas fa-chart-line nav-icon"></i>
-            <span>Dashboard</span>
+            <span>Security Dashboard</span>
           </a>
-          
           <a href="/uploadapp/apps" class="nav-item active">
             <i class="fas fa-mobile-alt nav-icon"></i>
             <span>App Manager</span>
           </a>
+          <a href="/results" class="nav-item">
+            <i class="fas fa-file-alt nav-icon"></i>
+            <span>Analysis Results</span>
+          </a>
           
+          <div class="nav-section-title" style="margin-top: 12px;">SYSTEM</div>
           <a href="#" class="nav-item">
             <i class="fas fa-cog nav-icon"></i>
             <span>Settings</span>
@@ -2069,7 +2093,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           
           <a href="/logout" class="logout-nav">
             <i class="fas fa-sign-out-alt nav-icon"></i>
-            <span>Logout</span>
+            <span>Sign Out</span>
           </a>
         </div>
 
@@ -3262,14 +3286,14 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
     });
 
     if (searchRes.hits.hits.length === 0) {
-      return res.status(404).send('<html><body style="background:#060b14;color:white;font-family:Arial;text-align:center;padding:50px"><h1>App not found</h1><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
+      return res.status(404).send('<html><body style="background:#05090f;color:white;font-family:Arial;text-align:center;padding:50px"><h1>App not found</h1><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
     }
 
     const appData = searchRes.hits.hits[0]._source;
     const da = appData.dynamicAnalysis;
 
     if (!da || da.status !== 'completed') {
-      return res.status(400).send('<html><body style="background:#060b14;color:white;font-family:Arial;text-align:center;padding:50px"><h1>⚠️ Dynamic analysis not completed yet</h1><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
+      return res.status(400).send('<html><body style="background:#05090f;color:white;font-family:Arial;text-align:center;padding:50px"><h1>⚠️ Dynamic analysis not completed yet</h1><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
     }
 
     const raw = da.raw_report || {};
@@ -3357,7 +3381,7 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
   <title>Dynamic Analysis — ${esc(appData.appName || sha256)}</title>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-    body{background:#060b14;color:#cbd5e1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;padding:20px 16px}
+    body{background:#05090f;color:#cbd5e1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;padding:20px 16px}
     a{color:#3b82f6;text-decoration:none}a:hover{text-decoration:underline}
     .wrap{max-width:1140px;margin:0 auto}
     /* Top bar */
@@ -3367,20 +3391,20 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
     .page-title{font-size:20px;font-weight:700;color:#f1f5f9}
     .page-sub{font-size:12px;color:#64748b;margin-top:3px}
     /* Sections */
-    .section{background:#0f172a;border:1px solid #1e293b;border-radius:12px;padding:18px 20px;margin-bottom:14px;overflow:hidden}
-    .sec-hdr{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid #1e293b}
+    .section{background:#0b1120;border:1px solid #1a2332;border-radius:12px;padding:18px 20px;margin-bottom:14px;overflow:hidden}
+    .sec-hdr{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid #1a2332}
     .sec-icon{font-size:18px;width:32px;height:32px;background:#0f2040;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
     .sec-title{font-size:14px;font-weight:600;color:#e2e8f0;text-transform:uppercase;letter-spacing:.05em}
     .sec-count{margin-left:auto;background:#1e293b;color:#94a3b8;font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px}
     /* Stat grid */
     .stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
-    .stat-card{background:#060b14;border:1px solid #1e293b;border-radius:10px;padding:14px;text-align:center}
+    .stat-card{background:#05090f;border:1px solid #1a2332;border-radius:10px;padding:14px;text-align:center}
     .stat-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
     .stat-val{font-size:26px;font-weight:700;color:#3b82f6;line-height:1}
     .stat-val.green{color:#22c55e}.stat-val.red{color:#ef4444}.stat-val.yellow{color:#f59e0b}.stat-val.gray{color:#94a3b8;font-size:13px;margin-top:4px}
     /* Env cards */
     .env-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}
-    .env-card{background:#060b14;border:1px solid #1e293b;border-radius:10px;padding:12px;text-align:center}
+    .env-card{background:#05090f;border:1px solid #1a2332;border-radius:10px;padding:12px;text-align:center}
     .env-card .env-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px}
     .env-card .env-icon{font-size:22px}
     /* Tables */
@@ -3680,7 +3704,7 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
     res.send(html);
   } catch (err) {
     console.error("[Dynamic Results] Error:", err.message);
-    res.status(500).send(`<html><body style="background:#060b14;color:white;font-family:Arial;padding:40px"><h1>Error loading results</h1><p>${err.message}</p><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>`);
+    res.status(500).send(`<html><body style="background:#05090f;color:white;font-family:Arial;padding:40px"><h1>Error loading results</h1><p>${err.message}</p><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>`);
   }
 });
 

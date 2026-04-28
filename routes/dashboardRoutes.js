@@ -169,7 +169,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-            background: #0a192f;
+            background: #05090f;
             color: #94a3b8;
             min-height: 100vh;
             display: flex;
@@ -177,18 +177,19 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
 
         /* Sidebar styles */
         .sidebar {
-            width: 200px;
-            background: #112240;
+            width: 240px;
+            background: #0b1120;
             height: 100vh;
-            padding: 20px 0;
+            padding: 0;
             display: flex;
             flex-direction: column;
             position: fixed;
-            left: -200px;
+            left: -240px;
             top: 0;
+            transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
             z-index: 1000;
-            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);
-            transition: left 0.3s ease;
+            box-shadow: 4px 0 24px rgba(0, 0, 0, 0.6);
+            border-right: 1px solid #1a2332;
         }
 
         .sidebar.open {
@@ -196,49 +197,64 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
         }
 
         .logo {
-            padding: 0 18px 25px;
+            padding: 22px 20px;
             display: flex;
             align-items: center;
             gap: 12px;
             color: white;
-            font-weight: 600;
-            font-size: 17px;
-            border-bottom: 1px solid #1d3557;
-            margin-bottom: 20px;
+            font-weight: 700;
+            font-size: 16px;
+            border-bottom: 1px solid #1a2332;
+            letter-spacing: 0.5px;
         }
 
         .logo-icon {
-            width: 32px;
-            height: 32px;
-            background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); border-radius: 8px;
+            width: 38px;
+            height: 38px;
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            border-radius: 10px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 16px;
+            font-size: 18px;
             color: white;
+            box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);
+        }
+
+        .nav-section-title {
+            padding: 20px 20px 8px;
+            color: #475569;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
         }
 
         .nav-item {
-            padding: 12px 18px;
+            padding: 11px 20px;
             color: #94a3b8;
             text-decoration: none;
             display: flex;
             align-items: center;
-            gap: 12px;
-            transition: all 0.2s;
+            gap: 14px;
+            transition: all 0.2s ease;
             font-size: 14px;
             cursor: pointer;
+            border-left: 3px solid transparent;
+            margin: 1px 0;
         }
 
         .nav-item:hover {
-            background: #1d3557;
-            color: white;
+            background: rgba(59, 130, 246, 0.08);
+            color: #e2e8f0;
+            border-left-color: rgba(59, 130, 246, 0.3);
         }
 
         .nav-item.active {
-            background: #000000;
-            color: white;
-            border-left: 3px solid #2563eb;
+            background: rgba(59, 130, 246, 0.15);
+            color: #60a5fa;
+            border-left-color: #3b82f6;
+            font-weight: 600;
         }
 
         .nav-icon {
@@ -249,20 +265,20 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
 
         .logout-nav {
             margin-top: auto;
-            padding: 12px 18px;
-            color: #ef4444;
+            padding: 14px 20px;
+            color: #f87171;
             text-decoration: none;
             display: flex;
             align-items: center;
-            gap: 12px;
-            transition: all 0.2s;
+            gap: 14px;
+            transition: all 0.2s ease;
             font-size: 14px;
-            border-top: 1px solid #1d3557;
+            border-top: 1px solid #1a2332;
         }
 
         .logout-nav:hover {
-            background: #7f1d1d;
-            color: white;
+            background: rgba(239, 68, 68, 0.15);
+            color: #fca5a5;
         }
 
         /* Main content styles */
@@ -274,8 +290,8 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             transition: margin-left 0.3s ease;
         }
 
-        .main-content.shifted {
-            margin-left: 200px;
+        .sidebar.open ~ .main-content {
+            margin-left: 240px;
         }
 
         .menu-btn {
@@ -302,6 +318,18 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             left: 0;
             width: 100%;
             height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 999;
+            backdrop-filter: blur(2px);
+        }
+
+        .overlay.show {
+            display: block;
+        }
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
             background: rgba(0, 0, 0, 0.5);
             z-index: 999;
         }
@@ -311,12 +339,12 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
         }
 
         .top-bar {
-            background: #112240;
+            background: #0b1120;
             padding: 8px 20px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 1px solid #1d3557;
+            border-bottom: 1px solid #1a2332;
         }
 
         .top-actions {
@@ -359,7 +387,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             position: absolute;
             right: 10px;
             top: 50px;
-            background: #0f172a;
+            background: #0b1120;
             border: 1px solid #1d3557;
             border-radius: 8px;
             width: 340px;
@@ -932,7 +960,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
 </head>
 <body>
     <!-- Sidebar -->
-    <div class="sidebar">
+    <div class="sidebar" id="sidebar">
         <div class="logo">
             <div class="logo-icon">
                 <i class="fas fa-shield-alt"></i>
@@ -940,21 +968,25 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             <span>CYBER WOLF</span>
         </div>
         
+        <div class="nav-section-title">NAVIGATION</div>
         <a href="/" class="nav-item">
             <i class="fas fa-home nav-icon"></i>
             <span>Home</span>
         </a>
-        
         <a href="/dashboard" class="nav-item active">
             <i class="fas fa-chart-line nav-icon"></i>
-            <span>Dashboard</span>
+            <span>Security Dashboard</span>
         </a>
-        
         <a href="/uploadapp/apps" class="nav-item">
             <i class="fas fa-mobile-alt nav-icon"></i>
             <span>App Manager</span>
         </a>
+        <a href="/results" class="nav-item">
+            <i class="fas fa-file-alt nav-icon"></i>
+            <span>Analysis Results</span>
+        </a>
         
+        <div class="nav-section-title" style="margin-top: 12px;">SYSTEM</div>
         <a href="#" class="nav-item">
             <i class="fas fa-cog nav-icon"></i>
             <span>Settings</span>
@@ -962,7 +994,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
         
         <a href="/logout" class="logout-nav">
             <i class="fas fa-sign-out-alt nav-icon"></i>
-            <span>Logout</span>
+            <span>Sign Out</span>
         </a>
     </div>
 

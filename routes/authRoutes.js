@@ -29,7 +29,7 @@ const buildAuthPage = (title, body) => `
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-      background: #060b14;
+      background: #05090f;
       color: #e2e8f0;
       min-height: 100vh;
       display: flex;
@@ -43,15 +43,16 @@ const buildAuthPage = (title, body) => `
       margin-bottom: 20px; text-align: center;
     }
     .brand-icon {
-      width: 42px; height: 42px; background: linear-gradient(135deg,#1d4ed8,#7c3aed);
+      width: 42px; height: 42px; background: linear-gradient(135deg,#3b82f6,#2563eb);
       border-radius: 10px; display: flex; align-items: center; justify-content: center;
       font-size: 20px;
+      box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);
     }
     .brand-name { font-size: 15px; font-weight: 600; color: #94a3b8; letter-spacing: .5px; }
     .card {
       width: min(480px, 100%);
-      background: #0f172a;
-      border: 1px solid #1e293b;
+      background: #0b1120;
+      border: 1px solid #1a2332;
       border-radius: 18px;
       padding: 32px 28px;
       box-shadow: 0 20px 60px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.04);
@@ -548,8 +549,7 @@ router.get("/login", (req, res) => {
             btn.disabled = false; btn.textContent = 'Sign In'; return;
           }
           showAlert('✓ Login successful! Redirecting…', 'success');
-          const next = new URLSearchParams(window.location.search).get('next');
-          setTimeout(() => { window.location.href = (next && next.startsWith('/')) ? next : '/'; }, 700);
+          setTimeout(() => { window.location.href = '/'; }, 700);
         } catch (err) {
           showAlert('Network error. Please try again.', 'error');
           btn.disabled = false; btn.textContent = 'Sign In';

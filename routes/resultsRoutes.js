@@ -230,25 +230,26 @@ router.get("/", requireWebAuth, async (req, res) => {
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#060b14;color:#cbd5e1;min-height:100vh}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#05090f;color:#cbd5e1;min-height:100vh}
     a{color:#3b82f6;text-decoration:none}a:hover{text-decoration:underline}
 
     /* ── Sidebar ── */
-    .sidebar{width:240px;background:#0d1829;height:100vh;position:fixed;left:-240px;top:0;padding:0;overflow-y:auto;z-index:1000;transition:left .25s ease;border-right:1px solid #1e293b}
+    .sidebar{width:240px;background:#0b1120;height:100vh;position:fixed;left:-240px;top:0;padding:0;display:flex;flex-direction:column;overflow-y:auto;z-index:1000;transition:left .3s cubic-bezier(0.4, 0, 0.2, 1);box-shadow:4px 0 24px rgba(0, 0, 0, 0.6);border-right:1px solid #1a2332}
     .sidebar.open{left:0}
-    .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:999}
+    .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:999;backdrop-filter:blur(2px)}
     .overlay.open{display:block}
-    .sb-logo{padding:20px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #1e293b;margin-bottom:8px}
-    .sb-logo-icon{width:36px;height:36px;background:linear-gradient(135deg,#1d4ed8,#1e40af);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
-    .sb-logo-text{font-size:15px;font-weight:700;color:#f1f5f9}
-    .nav-link{padding:11px 20px;color:#64748b;display:flex;align-items:center;gap:12px;font-size:13px;cursor:pointer;transition:all .15s;border-left:3px solid transparent}
-    .nav-link:hover{background:#0f2040;color:#e2e8f0;text-decoration:none}
-    .nav-link.active{background:#0f2040;color:#60a5fa;border-left-color:#3b82f6}
-    .nav-link i{width:16px;text-align:center}
-    .nav-logout{color:#ef4444;border-top:1px solid #1e293b;margin-top:8px}
+    .logo{padding:22px 20px;display:flex;align-items:center;gap:12px;color:white;font-weight:700;font-size:16px;border-bottom:1px solid #1a2332;letter-spacing:0.5px}
+    .logo-icon{width:38px;height:38px;background:linear-gradient(135deg,#3b82f6,#2563eb);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;color:white;box-shadow:0 4px 14px rgba(59, 130, 246, 0.4)}
+    .nav-section-title{padding:20px 20px 8px;color:#475569;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px}
+    .nav-item{padding:11px 20px;color:#94a3b8;text-decoration:none;display:flex;align-items:center;gap:14px;font-size:14px;cursor:pointer;transition:all .2s ease;border-left:3px solid transparent;margin:1px 0}
+    .nav-item:hover{background:rgba(59, 130, 246, 0.08);color:#e2e8f0;text-decoration:none;border-left-color:rgba(59, 130, 246, 0.3)}
+    .nav-item.active{background:rgba(59, 130, 246, 0.15);color:#60a5fa;border-left-color:#3b82f6;font-weight:600}
+    .nav-icon{width:20px;text-align:center;font-size:16px}
+    .logout-nav{margin-top:auto;padding:14px 20px;color:#f87171;text-decoration:none;display:flex;align-items:center;gap:14px;transition:all .2s ease;font-size:14px;border-top:1px solid #1a2332}
+    .logout-nav:hover{background:rgba(239, 68, 68, 0.15);color:#fca5a5}
 
     /* ── Top bar ── */
-    .topbar{background:#0d1829;padding:12px 20px;display:flex;align-items:center;gap:14px;border-bottom:1px solid #1e293b;position:sticky;top:0;z-index:100}
+    .topbar{background:#0b1120;padding:12px 20px;display:flex;align-items:center;gap:14px;border-bottom:1px solid #1a2332;position:sticky;top:0;z-index:100}
     .menu-btn{background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer;padding:4px 8px;line-height:1}
     .menu-btn:hover{color:#f1f5f9}
     .topbar-title{font-size:15px;font-weight:600;color:#e2e8f0}
@@ -263,7 +264,7 @@ router.get("/", requireWebAuth, async (req, res) => {
 
     /* ── Summary cards ── */
     .summary-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:22px}
-    .sum-card{background:#0d1829;border:1px solid #1e293b;border-radius:10px;padding:16px 18px;cursor:pointer;transition:border-color .2s}
+    .sum-card{background:#0b1120;border:1px solid #1a2332;border-radius:10px;padding:16px 18px;cursor:pointer;transition:border-color .2s}
     .sum-card:hover{border-color:#334155}
     .sum-lbl{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px}
     .sum-val{font-size:30px;font-weight:800;line-height:1}
@@ -277,7 +278,7 @@ router.get("/", requireWebAuth, async (req, res) => {
     .apps-count{margin-left:auto;font-size:12px;color:#64748b}
 
     /* ── App Card ── */
-    .app-card{background:#0d1829;border:1px solid #1e293b;border-radius:12px;margin-bottom:14px;overflow:hidden;transition:border-color .2s}
+    .app-card{background:#0b1120;border:1px solid #1a2332;border-radius:12px;margin-bottom:14px;overflow:hidden;transition:border-color .2s}
     .app-card:hover{border-color:#334155}
     .card-header{display:flex;align-items:flex-start;gap:14px;padding:16px 18px 14px;border-bottom:1px solid #0f1e33}
     .card-num{font-size:11px;font-weight:700;color:#475569;background:#0b1422;border:1px solid #1e293b;border-radius:6px;padding:4px 8px;min-width:36px;text-align:center;flex-shrink:0;margin-top:2px}
@@ -292,7 +293,7 @@ router.get("/", requireWebAuth, async (req, res) => {
 
     /* ── 4-Source Grid ── */
     .sources-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:14px 18px;border-bottom:1px solid #0f1e33}
-    .source-box{background:#060b14;border:1px solid #1e293b;border-top:2px solid #1e293b;border-radius:8px;padding:12px}
+    .source-box{background:#05090f;border:1px solid #1a2332;border-top:2px solid #1a2332;border-radius:8px;padding:12px}
     .src-label{font-size:10px;color:#475569;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
     .src-val{font-size:16px;font-weight:700;line-height:1;margin-bottom:4px}
     .src-sub{font-size:10px;color:#334155}
@@ -313,7 +314,7 @@ router.get("/", requireWebAuth, async (req, res) => {
     .btn-algo{width:100%;background:linear-gradient(135deg,#1d4ed8,#6d28d9);color:#fff;border:none;border-radius:9px;padding:12px;font-size:13px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;letter-spacing:.04em;transition:opacity .2s}
     .btn-algo:hover{opacity:.88}
     .algo-btn-icon{font-size:14px}
-    .algo-result{margin-top:12px;background:#060b14;border:1px solid #1e293b;border-radius:10px;overflow:hidden}
+    .algo-result{margin-top:12px;background:#05090f;border:1px solid #1a2332;border-radius:10px;overflow:hidden}
     .algo-loading{display:flex;align-items:center;gap:10px;padding:16px 18px;color:#64748b;font-size:13px}
     .spinner{width:18px;height:18px;border:2px solid #334155;border-top-color:#3b82f6;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
     @keyframes spin{to{transform:rotate(360deg)}}
@@ -369,17 +370,42 @@ router.get("/", requireWebAuth, async (req, res) => {
 <body>
 <div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
 <div class="sidebar" id="sidebar">
-  <div class="sb-logo">
-    <div class="sb-logo-icon">🔒</div>
-    <div class="sb-logo-text">CYBER WOLF</div>
+  <div class="logo">
+    <div class="logo-icon"><i class="fas fa-shield-alt"></i></div>
+    <span>CYBER WOLF</span>
   </div>
-  <a href="/"            class="nav-link"><i class="fas fa-home"></i>Home</a>
-  <a href="/dashboard"   class="nav-link"><i class="fas fa-chart-line"></i>Dashboard</a>
-  <a href="/uploadapp/apps" class="nav-link"><i class="fas fa-mobile-alt"></i>App Manager</a>
-  <a href="/results"     class="nav-link active"><i class="fas fa-file-alt"></i>Results</a>
-  <a href="/notifications" class="nav-link"><i class="fas fa-bell"></i>Notifications</a>
-  <a href="/logout"      class="nav-link nav-logout"><i class="fas fa-sign-out-alt"></i>Logout</a>
+  
+  <div class="nav-section-title">NAVIGATION</div>
+  <a href="/" class="nav-item">
+    <i class="fas fa-home nav-icon"></i>
+    <span>Home</span>
+  </a>
+  <a href="/dashboard" class="nav-item">
+    <i class="fas fa-chart-line nav-icon"></i>
+    <span>Security Dashboard</span>
+  </a>
+  <a href="/uploadapp/apps" class="nav-item">
+    <i class="fas fa-mobile-alt nav-icon"></i>
+    <span>App Manager</span>
+  </a>
+  <a href="/results" class="nav-item active">
+    <i class="fas fa-file-alt nav-icon"></i>
+    <span>Analysis Results</span>
+  </a>
+  
+  <div class="nav-section-title" style="margin-top: 12px;">SYSTEM</div>
+  <a href="#" class="nav-item">
+    <i class="fas fa-cog nav-icon"></i>
+    <span>Settings</span>
+  </a>
+  
+  <a href="/logout" class="logout-nav">
+    <i class="fas fa-sign-out-alt nav-icon"></i>
+    <span>Sign Out</span>
+  </a>
 </div>
+
+<div class="overlay" id="overlay"></div>
 
 <div class="topbar">
   <button class="menu-btn" onclick="toggleSidebar()">☰</button>

@@ -891,34 +891,52 @@ const storeMLPrediction = async (req, res) => {
     const doc = searchResult.hits.hits[0];
     const docId = doc._id;
 
-    // Prepare ML prediction data (stored separately, does NOT update overall status)
+    // Determine new status from ML prediction label
+    const normalizedLabel = (mlPredictionLabel || '').toUpperCase();
+    let newStatus;
+    if (normalizedLabel === 'SAFE') {
+      newStatus = 'safe';
+    } else if (normalizedLabel === 'MALICIOUS' || normalizedLabel === 'MALWARE') {
+      newStatus = 'malicious';
+    } else if (normalizedLabel === 'RISKY' || normalizedLabel === 'SUSPICIOUS') {
+      newStatus = 'suspicious';
+    } else {
+      // Threshold-based fallback using score (0–1 probability)
+      const score = parseFloat(mlPredictionScore);
+      if (score < 0.3) newStatus = 'safe';
+      else if (score < 0.6) newStatus = 'suspicious';
+      else newStatus = 'malicious';
+    }
+
     const mlPredictionData = {
       mlPredictionScore: parseFloat(mlPredictionScore),
-      mlPredictionLabel: mlPredictionLabel, // "safe", "risky", "malware"
+      mlPredictionLabel: mlPredictionLabel,
       mlAnalysisTimestamp: new Date().toISOString()
     };
 
-    // Update the document with ML prediction data ONLY (status remains unchanged)
+    // Update the document with ML prediction data AND updated status
     await esClient.update({
       index: indexName,
       id: docId,
       body: {
         doc: {
           ...mlPredictionData,
-          mlAnalysisDate: new Date()
+          mlAnalysisDate: new Date(),
+          status: newStatus
         },
       },
     });
 
-    console.log(`🤖 ML Prediction stored for ${packageName} (Status NOT updated - kept as: ${doc._source.status})`);
+    console.log(`🤖 ML Prediction stored for ${packageName} (Status updated: ${doc._source.status} → ${newStatus})`);
     console.log(`   Score: ${mlPredictionScore}, Label: ${mlPredictionLabel}`);
 
     res.status(200).json({
-      message: "ML Prediction stored successfully (status unchanged)",
+      message: "ML Prediction stored successfully",
       packageName,
       mlPredictionScore,
       mlPredictionLabel,
-      currentStatus: doc._source.status,
+      previousStatus: doc._source.status,
+      currentStatus: newStatus,
       timestamp: new Date().toISOString()
     });
 
