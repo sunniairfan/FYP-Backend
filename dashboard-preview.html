@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Column Overflow Fix - Preview</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #05090f;
+            color: #94a3b8;
+            min-height: 100vh;
+            padding: 30px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            color: white;
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            color: #64748b;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+
+        .fix-info {
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid #10b981;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 30px;
+            color: #10b981;
+            font-size: 14px;
+        }
+
+        .table-header {
+            display: grid;
+            grid-template-columns: 1.45fr 1.45fr 1.35fr 1.25fr 1fr;
+            padding: 10px 15px;
+            background: #1d3557;
+            border: 1px solid #1d3557;
+            border-radius: 8px 8px 0 0;
+            gap: 10px;
+        }
+
+        .table-header div {
+            color: #e2e8f0;
+            font-size: 13px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.7px;
+        }
+
+        .app-list {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .app-row {
+            display: grid;
+            grid-template-columns: 1.45fr 1.45fr 1.35fr 1.25fr 1fr;
+            padding: 12px 15px;
+            background: #1d3557;
+            border: 1px solid #1d3557;
+            border-top: none;
+            align-items: center;
+            transition: all 0.3s;
+            gap: 10px;
+        }
+
+        .app-row:last-child {
+            border-radius: 0 0 8px 8px;
+        }
+
+        .app-row:hover {
+            background: #2a4a7f;
+            border-color: #3b82f6;
+        }
+
+        /* KEY FIX: Prevent content overflow into adjacent columns */
+        .app-row > div {
+            min-width: 0;
+            overflow: hidden;
+            padding-right: 8px;
+        }
+
+        .app-name {
+            color: #e2e8f0;
+            font-weight: 600;
+            font-size: 15px;
+            margin-bottom: 4px;
+            /* KEY FIX: Truncate long app names with ellipsis */
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .app-meta {
+            color: #cbd5e1;
+            font-size: 13px;
+            line-height: 1.4;
+            /* KEY FIX: Truncate long meta text with ellipsis */
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            word-break: break-word;
+        }
+
+        .status-badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            display: inline-block;
+            white-space: nowrap;
+        }
+
+        .status-safe {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+        }
+
+        .status-suspicious {
+            background: rgba(245, 158, 11, 0.2);
+            color: #f59e0b;
+        }
+
+        .status-analysis-cell {
+            min-width: 0;
+            padding-right: 6px;
+            overflow: hidden;
+        }
+
+        .ml-model-badge {
+            margin-top: 6px;
+            padding: 5px 8px;
+            background: rgba(99, 102, 241, 0.12);
+            border: 1px solid rgba(99, 102, 241, 0.35);
+            border-radius: 5px;
+            color: #8b93ff;
+            font-size: 12px;
+            font-weight: 600;
+            line-height: 1.35;
+            display: inline-block;
+            max-width: 100%;
+            white-space: normal;
+            overflow-wrap: break-word;
+            word-break: break-word;
+        }
+
+        .actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            justify-content: flex-start;
+            width: 100%;
+            min-width: 0;
+            overflow: hidden;
+        }
+
+        .view-btn {
+            background: #2563eb;
+            border: none;
+            color: white;
+            padding: 8px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.3s;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        .delete-icon {
+            width: 32px;
+            height: 32px;
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid #7f1d1d;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #ef4444;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 12px;
+            flex-shrink: 0;
+        }
+
+        .css-section {
+            margin-top: 40px;
+            background: #112240;
+            border: 1px solid #1d3557;
+            border-radius: 8px;
+            padding: 20px;
+        }
+
+        .css-section h2 {
+            color: #60a5fa;
+            font-size: 16px;
+            margin-bottom: 15px;
+        }
+
+        .css-code {
+            background: #0b1120;
+            border: 1px solid #1d3557;
+            border-radius: 6px;
+            padding: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #10b981;
+            overflow-x: auto;
+            margin-bottom: 15px;
+        }
+
+        .fix-item {
+            margin-bottom: 15px;
+            padding: 10px;
+            background: rgba(59, 130, 246, 0.1);
+            border-left: 3px solid #3b82f6;
+            color: #e2e8f0;
+        }
+
+        .fix-item strong {
+            color: #60a5fa;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎯 Dashboard Column Overflow Fix - Test Preview</h1>
+            <p class="subtitle">Demonstrating the CSS fixes applied to ensure content stays within column boundaries</p>
+        </div>
+
+        <div class="fix-info">
+            ✅ All column overflow issues have been fixed. Content will no longer bleed into adjacent columns. Test the example below to see the improvements in action.
+        </div>
+
+        <div class="table-header">
+            <div>APP DETAILS</div>
+            <div>PACKAGE INFO</div>
+            <div>FILE INFORMATION</div>
+            <div>STATUS & ANALYSIS</div>
+            <div>ACTIONS</div>
+        </div>
+        <div class="app-list">
+            <!-- Example with very long package name -->
+            <div class="app-row">
+                <div>
+                    <div class="app-name">Instagram</div>
+                    <div class="app-meta">Uploaded: 01/05/2026</div>
+                </div>
+                <div>
+                    <div class="app-meta">Package: com.instagram.android.super.long.package.name.that.overflows</div>
+                    <div class="app-meta">Device: 0bc760eabcd139f0</div>
+                </div>
+                <div>
+                    <div class="app-meta">Size: 3.48 MB</div>
+                    <div class="app-meta">Hash: 6034eb031f88b801...</div>
+                </div>
+                <div class="status-analysis-cell">
+                    <span class="status-badge status-safe">SAFE</span>
+                    <div class="app-meta" style="margin-top: 5px;">Score: 0/64</div>
+                </div>
+                <div class="actions">
+                    <button class="view-btn">View Details</button>
+                    <div class="delete-icon">
+                        <i class="fas fa-trash-alt"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Example with ML badge -->
+            <div class="app-row">
+                <div>
+                    <div class="app-name">Suspicious App</div>
+                    <div class="app-meta">Uploaded: 01/05/2026</div>
+                </div>
+                <div>
+                    <div class="app-meta">Package: com.malicious.app</div>
+                    <div class="app-meta">Device: 0bc760eabcd139f0</div>
+                </div>
+                <div>
+                    <div class="app-meta">Size: 5.21 MB</div>
+                    <div class="app-meta">Hash: 74d4deb71c871699...</div>
+                </div>
+                <div class="status-analysis-cell">
+                    <span class="status-badge status-suspicious">SUSPICIOUS</span>
+                    <div class="app-meta" style="margin-top: 5px;">Score: 35/65</div>
+                    <div class="ml-model-badge">🤖 ML Model: Malware (0.876)</div>
+                </div>
+                <div class="actions">
+                    <button class="view-btn">View Details</button>
+                    <div class="delete-icon">
+                        <i class="fas fa-trash-alt"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Example with very long app name -->
+            <div class="app-row">
+                <div>
+                    <div class="app-name">This is a Very Long Application Name That Should Be Truncated With Ellipsis</div>
+                    <div class="app-meta">Uploaded: 01/05/2026</div>
+                </div>
+                <div>
+                    <div class="app-meta">Package: com.example.very.long.package.identifier</div>
+                    <div class="app-meta">Device: abcd1234efgh5678ijkl9012mnop</div>
+                </div>
+                <div>
+                    <div class="app-meta">Size: 2.91 MB</div>
+                    <div class="app-meta">Hash: abcd1234efgh5678...</div>
+                </div>
+                <div class="status-analysis-cell">
+                    <span class="status-badge status-safe">SAFE</span>
+                    <div class="app-meta" style="margin-top: 5px;">Score: 0/63</div>
+                </div>
+                <div class="actions">
+                    <button class="view-btn">View Details</button>
+                    <div class="delete-icon">
+                        <i class="fas fa-trash-alt"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="css-section">
+            <h2>🔧 CSS Fixes Applied</h2>
+            
+            <div class="fix-item">
+                <strong>1. Cell Overflow Prevention</strong><br>
+                Added to <code>.app-row > div</code>:<br>
+                <code>overflow: hidden; padding-right: 8px;</code>
+            </div>
+
+            <div class="fix-item">
+                <strong>2. Text Truncation for App Names</strong><br>
+                Added to <code>.app-name</code>:<br>
+                <code>overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</code>
+            </div>
+
+            <div class="fix-item">
+                <strong>3. Meta Text Truncation</strong><br>
+                Added to <code>.app-meta</code>:<br>
+                <code>overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</code>
+            </div>
+
+            <div class="fix-item">
+                <strong>4. Status Analysis Cell Containment</strong><br>
+                Added to <code>.status-analysis-cell</code>:<br>
+                <code>overflow: hidden;</code>
+            </div>
+
+            <div class="fix-item">
+                <strong>5. Actions Column Flex Shrink</strong><br>
+                Added to <code>.actions, .view-btn, .delete-icon</code>:<br>
+                <code>flex-shrink: 0;</code>
+            </div>
+
+            <div class="fix-item">
+                <strong>6. ML Badge Word Breaking</strong><br>
+                Updated <code>.ml-model-badge</code>:<br>
+                <code>overflow-wrap: break-word; word-break: break-word;</code>
+            </div>
+
+            <h2 style="margin-top: 20px; color: #60a5fa;">✅ Result</h2>
+            <p style="color: #cbd5e1; margin-top: 10px;">
+                All content now stays within its column boundaries. Long text is truncated with ellipsis (...), 
+                and multi-line content (like ML badges) wraps properly without overflowing into adjacent columns.
+            </p>
+        </div>
+    </div>
+</body>
+</html>

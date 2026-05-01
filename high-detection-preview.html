@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>High Detection Apps Highlighting Preview</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #05090f;
+            color: #94a3b8;
+            min-height: 100vh;
+            padding: 30px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        h1 {
+            color: white;
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            color: #64748b;
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+
+        .feature-info {
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid #3b82f6;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 30px;
+            color: #60a5fa;
+            font-size: 14px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            background: #112240;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid #27456c;
+            margin-bottom: 40px;
+        }
+
+        thead {
+            background: #1d3557;
+        }
+
+        th {
+            padding: 10px 10px;
+            text-align: left;
+            color: #e2e8f0;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.7px;
+            border-bottom: 1px solid #27456c;
+            border-right: 1px solid rgba(39, 69, 108, 0.45);
+        }
+
+        th:last-child {
+            border-right: none;
+        }
+
+        th:nth-child(1) { width: 22%; }
+        th:nth-child(2) { width: 10%; }
+        th:nth-child(3) { width: 25%; }
+        th:nth-child(4) { width: 43%; }
+
+        td {
+            padding: 10px 10px;
+            border-bottom: 1px solid rgba(39, 69, 108, 0.42);
+            border-right: 1px solid rgba(39, 69, 108, 0.28);
+            color: #cbd5e1;
+            font-size: 13px;
+            vertical-align: top;
+        }
+
+        td:last-child {
+            border-right: none;
+        }
+
+        td:nth-child(1) { width: 22%; }
+        td:nth-child(2) { width: 10%; }
+        td:nth-child(3) { width: 25%; }
+        td:nth-child(4) { width: 43%; }
+
+        tbody tr:nth-child(odd) td {
+            background: rgba(11, 17, 32, 0.38);
+        }
+
+        tbody tr:nth-child(even) td {
+            background: rgba(11, 17, 32, 0.18);
+        }
+
+        tr:hover td {
+            background: rgba(29, 53, 87, 0.62);
+        }
+
+        /* High Detection Alert - Apps with >30 detected engines */
+        tr.high-detection td {
+            background: linear-gradient(90deg, rgba(239, 68, 68, 0.12) 0%, rgba(239, 68, 68, 0.06) 100%) !important;
+            border: 1px solid rgba(239, 68, 68, 0.4) !important;
+        }
+
+        tr.high-detection:hover td {
+            background: linear-gradient(90deg, rgba(239, 68, 68, 0.18) 0%, rgba(239, 68, 68, 0.12) 100%) !important;
+            border-color: rgba(239, 68, 68, 0.6) !important;
+        }
+
+        tr.high-detection td:first-child::before {
+            content: "⚠️";
+            margin-right: 6px;
+            font-size: 14px;
+        }
+
+        .app-name {
+            font-weight: 600;
+            color: white;
+            font-size: 14px;
+        }
+
+        .package-name {
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            color: #94a3b8;
+            margin-top: 3px;
+        }
+
+        .app-package-meta {
+            margin-top: 6px;
+            display: grid;
+            gap: 2px;
+        }
+
+        .meta-line {
+            font-size: 11px;
+            color: #94a3b8;
+            line-height: 1.35;
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+        }
+
+        .meta-line strong {
+            color: #cbd5e1;
+            font-weight: 600;
+            min-width: 58px;
+        }
+
+        .file-info {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-top: 3px;
+        }
+
+        .status {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            display: inline-block;
+            background: rgba(107, 114, 128, 0.2);
+            color: #6b7280;
+        }
+
+        .status.safe {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+        }
+
+        .status.suspicious {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+
+        .detection-badge {
+            margin-top: 6px;
+            padding: 5px 8px;
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            border-radius: 5px;
+            color: #ef4444;
+            font-weight: 700;
+            font-size: 11px;
+        }
+
+        .vt-detection {
+            margin-top: 4px;
+            padding: 4px 6px;
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid rgba(239, 68, 68, 0.5);
+            border-radius: 4px;
+            color: #ef4444;
+            font-weight: 600;
+            font-size: 10px;
+        }
+
+        .features-section {
+            background: #112240;
+            border: 1px solid #1d3557;
+            border-radius: 8px;
+            padding: 25px;
+            margin-bottom: 30px;
+        }
+
+        .features-section h2 {
+            color: #60a5fa;
+            font-size: 18px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .feature-item {
+            margin-bottom: 15px;
+            padding: 12px;
+            background: rgba(59, 130, 246, 0.1);
+            border-left: 3px solid #3b82f6;
+            border-radius: 4px;
+        }
+
+        .feature-item strong {
+            color: #60a5fa;
+        }
+
+        .feature-item p {
+            color: #cbd5e1;
+            font-size: 14px;
+            margin: 5px 0 0 0;
+        }
+
+        .legend {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .legend-item {
+            padding: 12px;
+            background: rgba(15, 23, 42, 0.5);
+            border: 1px solid #1d3557;
+            border-radius: 6px;
+        }
+
+        .legend-item strong {
+            display: block;
+            color: #e2e8f0;
+            margin-bottom: 5px;
+        }
+
+        .legend-item span {
+            color: #94a3b8;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚨 High Detection Apps Highlighting</h1>
+            <p class="subtitle">Apps with >30 detected engines are now visually highlighted in the uploaded app section</p>
+        </div>
+
+        <div class="feature-info">
+            ✅ When an app is uploaded with <strong>more than 30 detected engines</strong>, it is automatically highlighted with:
+            <br>• Red/warning background gradient
+            <br>• ⚠️ Warning icon next to app name
+            <br>• 🚨 DETECTED badge showing engine count
+            <br>• 📊 Detection engines count display in status section
+        </div>
+
+        <!-- Example Table -->
+        <h2 style="color: white; margin-bottom: 20px;">Example: Uploaded Apps List</h2>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>App & Package</th>
+                    <th>File Info</th>
+                    <th>Status & Analysis</th>
+                    <th class="actions">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Normal app (low detection) -->
+                <tr>
+                    <td>
+                        <div class="app-name">Instagram</div>
+                        <div class="package-name">com.instagram.android</div>
+                        <div class="app-package-meta">
+                            <div class="meta-line"><strong>Uploaded</strong><span>05/01/2026</span></div>
+                            <div class="meta-line"><strong>Device</strong><span>0bc760eabcd139f0</span></div>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="file-info">instagram.apk</div>
+                        <div class="file-info">45.2 MB</div>
+                    </td>
+                    <td>
+                        <span class="status safe">safe</span>
+                        <div style="margin-top: 4px;">
+                            <span style="background: rgba(148, 163, 184, 0.15); color: #94a3b8; padding: 4px 8px; border-radius: 3px; font-size: 10px;">VT: 0/64</span>
+                        </div>
+                    </td>
+                    <td style="text-align: center; color: #64748b;">
+                        <small>Analysis buttons here</small>
+                    </td>
+                </tr>
+
+                <!-- High detection app (>30 engines) - HIGHLIGHTED -->
+                <tr class="high-detection">
+                    <td>
+                        <div class="app-name">Suspicious App</div>
+                        <div class="package-name">com.malware.trojan.app</div>
+                        <div class="app-package-meta">
+                            <div class="meta-line"><strong>Uploaded</strong><span>05/01/2026</span></div>
+                            <div class="meta-line"><strong>Device</strong><span>xyz123abc456def789</span></div>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="file-info">malware.apk</div>
+                        <div class="file-info">8.7 MB</div>
+                    </td>
+                    <td>
+                        <span class="status suspicious">suspicious</span>
+                        <div class="detection-badge">
+                            🚨 DETECTED: 38 Engines
+                        </div>
+                        <div style="margin-top: 4px;">
+                            <span style="background: rgba(148, 163, 184, 0.15); color: #94a3b8; padding: 4px 8px; border-radius: 3px; font-size: 10px;">VT: 38/64</span>
+                        </div>
+                        <div class="vt-detection">
+                            📊 Total Detected: 38
+                        </div>
+                    </td>
+                    <td style="text-align: center; color: #64748b;">
+                        <small>Analysis buttons here</small>
+                    </td>
+                </tr>
+
+                <!-- Another high detection app -->
+                <tr class="high-detection">
+                    <td>
+                        <div class="app-name">Cryptominer</div>
+                        <div class="package-name">com.hidden.crypto.miner</div>
+                        <div class="app-package-meta">
+                            <div class="meta-line"><strong>Uploaded</strong><span>05/01/2026</span></div>
+                            <div class="meta-line"><strong>Device</strong><span>device-uuid-5678</span></div>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="file-info">app.apk</div>
+                        <div class="file-info">12.3 MB</div>
+                    </td>
+                    <td>
+                        <span class="status suspicious">suspicious</span>
+                        <div class="detection-badge">
+                            🚨 DETECTED: 45 Engines
+                        </div>
+                        <div style="margin-top: 4px;">
+                            <span style="background: rgba(148, 163, 184, 0.15); color: #94a3b8; padding: 4px 8px; border-radius: 3px; font-size: 10px;">VT: 45/71</span>
+                        </div>
+                        <div class="vt-detection">
+                            📊 Total Detected: 45
+                        </div>
+                    </td>
+                    <td style="text-align: center; color: #64748b;">
+                        <small>Analysis buttons here</small>
+                    </td>
+                </tr>
+
+                <!-- Low detection app -->
+                <tr>
+                    <td>
+                        <div class="app-name">Calculator App</div>
+                        <div class="package-name">com.example.calculator</div>
+                        <div class="app-package-meta">
+                            <div class="meta-line"><strong>Uploaded</strong><span>05/01/2026</span></div>
+                            <div class="meta-line"><strong>Device</strong><span>device-uuid-9012</span></div>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="file-info">calc.apk</div>
+                        <div class="file-info">2.1 MB</div>
+                    </td>
+                    <td>
+                        <span class="status safe">safe</span>
+                        <div style="margin-top: 4px;">
+                            <span style="background: rgba(148, 163, 184, 0.15); color: #94a3b8; padding: 4px 8px; border-radius: 3px; font-size: 10px;">VT: 0/60</span>
+                        </div>
+                    </td>
+                    <td style="text-align: center; color: #64748b;">
+                        <small>Analysis buttons here</small>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- Features Section -->
+        <div class="features-section">
+            <h2><i class="fas fa-star"></i> Implementation Details</h2>
+            
+            <div class="feature-item">
+                <strong>🚨 Visual Highlighting</strong>
+                <p>Apps with >30 detected engines have a red gradient background that clearly distinguishes them from normal apps.</p>
+            </div>
+
+            <div class="feature-item">
+                <strong>⚠️ Warning Icon</strong>
+                <p>A warning emoji (⚠️) appears next to the app name for instant recognition of high-risk uploads.</p>
+            </div>
+
+            <div class="feature-item">
+                <strong>📊 Detection Badge</strong>
+                <p>A prominent "🚨 DETECTED: X Engines" badge shows exactly how many antivirus engines detected the threat.</p>
+            </div>
+
+            <div class="feature-item">
+                <strong>🎯 Score Display</strong>
+                <p>The VirusTotal detection score is prominently displayed with "📊 Total Detected: X" in the status section.</p>
+            </div>
+
+            <div class="feature-item">
+                <strong>✅ Automatic Detection</strong>
+                <p>Detection happens automatically when the app is uploaded and analyzed through VirusTotal multi-engine scanning.</p>
+            </div>
+
+            <h3 style="color: #60a5fa; margin-top: 25px; margin-bottom: 15px;">Detection Thresholds</h3>
+            <div class="legend">
+                <div class="legend-item">
+                    <strong>Low Risk</strong>
+                    <span>0-10 detected engines - Normal appearance</span>
+                </div>
+                <div class="legend-item">
+                    <strong>Medium Risk</strong>
+                    <span>11-30 detected engines - Normal appearance</span>
+                </div>
+                <div class="legend-item">
+                    <strong>🚨 High Risk</strong>
+                    <span>>30 detected engines - RED HIGHLIGHTED with badges</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Code Info -->
+        <div class="features-section">
+            <h2><i class="fas fa-code"></i> What Changed</h2>
+            
+            <div style="background: rgba(15, 23, 42, 0.5); padding: 15px; border-radius: 6px; font-family: 'Courier New', monospace; font-size: 12px; color: #10b981; overflow-x: auto;">
+                <div style="margin-bottom: 10px;"><strong style="color: #60a5fa;">1. CSS Highlighting Rule Added:</strong></div>
+                <div style="margin-bottom: 15px;">tr.high-detection td {
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.12)...);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+}</div>
+
+                <div style="margin-bottom: 10px;"><strong style="color: #60a5fa;">2. Detection Logic Added:</strong></div>
+                <div style="margin-bottom: 15px;">const isHighDetection = detectedEngines > 30;
+...
+class="${isHighDetection ? 'high-detection' : ''}"</div>
+
+                <div style="margin-bottom: 10px;"><strong style="color: #60a5fa;">3. Badge Display Added:</strong></div>
+                <div>🚨 DETECTED: ${detectedEngines} Engines
+📊 Total Detected: ${detectedEngines}</div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

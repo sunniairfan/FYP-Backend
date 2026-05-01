@@ -87,6 +87,7 @@ const ensureIndexExists = async (esClient) => {
             detectionRatio: { type: "keyword" },
             totalEngines: { type: "integer" },
             detectedEngines: { type: "integer" },
+            uploadId: { type: "keyword" },
             apkFilePath: { type: "keyword" },
             apkFileName: { type: "keyword" },
             uploadSource: { type: "keyword" },
@@ -189,7 +190,7 @@ app.get("/", requireAdminSession, (req, res) => {
         }
         .nav-section-title {
           padding: 20px 20px 8px;
-          color: #475569;
+          color: #94a3b8;
           font-size: 10px;
           font-weight: 700;
           text-transform: uppercase;

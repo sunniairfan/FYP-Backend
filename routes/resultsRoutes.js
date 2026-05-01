@@ -218,7 +218,7 @@ router.get("/", requireWebAuth, async (req, res) => {
       : `<div class="empty-state">
           <div style="font-size:48px;margin-bottom:12px">📭</div>
           <div style="font-size:16px;color:#e2e8f0;margin-bottom:8px">No apps analyzed yet</div>
-          <div style="font-size:13px;color:#475569">Upload apps from App Manager, then run analysis.</div>
+          <div style="font-size:13px;color: #94a3b8">Upload apps from App Manager, then run analysis.</div>
          </div>`;
 
     const html = `<!DOCTYPE html>
@@ -240,7 +240,7 @@ router.get("/", requireWebAuth, async (req, res) => {
     .overlay.open{display:block}
     .logo{padding:22px 20px;display:flex;align-items:center;gap:12px;color:white;font-weight:700;font-size:16px;border-bottom:1px solid #1a2332;letter-spacing:0.5px}
     .logo-icon{width:38px;height:38px;background:linear-gradient(135deg,#3b82f6,#2563eb);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;color:white;box-shadow:0 4px 14px rgba(59, 130, 246, 0.4)}
-    .nav-section-title{padding:20px 20px 8px;color:#475569;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px}
+    .nav-section-title{padding:20px 20px 8px;color: #94a3b8;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px}
     .nav-item{padding:11px 20px;color:#94a3b8;text-decoration:none;display:flex;align-items:center;gap:14px;font-size:14px;cursor:pointer;transition:all .2s ease;border-left:3px solid transparent;margin:1px 0}
     .nav-item:hover{background:rgba(59, 130, 246, 0.08);color:#e2e8f0;text-decoration:none;border-left-color:rgba(59, 130, 246, 0.3)}
     .nav-item.active{background:rgba(59, 130, 246, 0.15);color:#60a5fa;border-left-color:#3b82f6;font-weight:600}
@@ -260,7 +260,7 @@ router.get("/", requireWebAuth, async (req, res) => {
     .page{padding:20px;max-width:1200px;margin:0 auto}
     .page-hdr{margin-bottom:22px}
     .page-title{font-size:26px;font-weight:800;color:#f1f5f9;margin-bottom:4px}
-    .page-sub{font-size:13px;color:#475569}
+    .page-sub{font-size:13px;color: #94a3b8}
 
     /* ── Summary cards ── */
     .summary-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:22px}
@@ -268,7 +268,7 @@ router.get("/", requireWebAuth, async (req, res) => {
     .sum-card:hover{border-color:#334155}
     .sum-lbl{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px}
     .sum-val{font-size:30px;font-weight:800;line-height:1}
-    .sum-desc{font-size:11px;color:#475569;margin-top:4px}
+    .sum-desc{font-size:11px;color: #94a3b8;margin-top:4px}
 
     /* ── Filter bar ── */
     .filter-bar{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
@@ -281,22 +281,22 @@ router.get("/", requireWebAuth, async (req, res) => {
     .app-card{background:#0b1120;border:1px solid #1a2332;border-radius:12px;margin-bottom:14px;overflow:hidden;transition:border-color .2s}
     .app-card:hover{border-color:#334155}
     .card-header{display:flex;align-items:flex-start;gap:14px;padding:16px 18px 14px;border-bottom:1px solid #0f1e33}
-    .card-num{font-size:11px;font-weight:700;color:#475569;background:#0b1422;border:1px solid #1e293b;border-radius:6px;padding:4px 8px;min-width:36px;text-align:center;flex-shrink:0;margin-top:2px}
+    .card-num{font-size:11px;font-weight:700;color: #94a3b8;background:#0b1422;border:1px solid #1e293b;border-radius:6px;padding:4px 8px;min-width:36px;text-align:center;flex-shrink:0;margin-top:2px}
     .card-identity{flex:1}
     .card-name{font-size:15px;font-weight:700;color:#f1f5f9;margin-bottom:3px}
-    .card-pkg{font-size:11px;color:#475569;font-family:monospace;margin-bottom:4px}
-    .card-meta{font-size:11px;color:#334155}
+    .card-pkg{font-size:11px;color: #94a3b8;font-family:monospace;margin-bottom:4px}
+    .card-meta{font-size:11px;color: #64748b}
     .card-verdict{border:1px solid #334155;border-radius:10px;padding:10px 16px;text-align:center;min-width:130px;flex-shrink:0}
     .verdict-dot{width:10px;height:10px;border-radius:50%;margin:0 auto 6px}
     .verdict-text{font-size:13px;font-weight:700;letter-spacing:.06em}
-    .verdict-sub{font-size:10px;color:#475569;margin-top:3px}
+    .verdict-sub{font-size:10px;color: #94a3b8;margin-top:3px}
 
     /* ── 4-Source Grid ── */
     .sources-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:14px 18px;border-bottom:1px solid #0f1e33}
     .source-box{background:#05090f;border:1px solid #1a2332;border-top:2px solid #1a2332;border-radius:8px;padding:12px}
-    .src-label{font-size:10px;color:#475569;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+    .src-label{font-size:10px;color: #94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
     .src-val{font-size:16px;font-weight:700;line-height:1;margin-bottom:4px}
-    .src-sub{font-size:10px;color:#334155}
+    .src-sub{font-size:10px;color: #64748b}
 
     /* ── SOC Row ── */
     .soc-row{display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid #0f1e33;flex-wrap:wrap}
@@ -325,9 +325,9 @@ router.get("/", requireWebAuth, async (req, res) => {
     .algo-score-wrap{border-right:1px solid #1e293b;display:flex;align-items:baseline;gap:4px}
     .algo-status-wrap{border-right:1px solid #1e293b}
     .algo-conf-wrap{border-right:1px solid #1e293b}
-    .algo-score-label,.algo-status-label,.algo-conf-label,.algo-src-label{font-size:10px;color:#475569;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px}
+    .algo-score-label,.algo-status-label,.algo-conf-label,.algo-src-label{font-size:10px;color: #94a3b8;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px}
     .algo-score-value{font-size:36px;font-weight:900;line-height:1}
-    .algo-score-max{font-size:14px;color:#475569;align-self:flex-end;padding-bottom:4px}
+    .algo-score-max{font-size:14px;color: #94a3b8;align-self:flex-end;padding-bottom:4px}
     .algo-status-value{font-size:20px;font-weight:800;letter-spacing:.05em}
     .algo-conf-bar-bg{height:8px;background:#1e293b;border-radius:99px;overflow:hidden;margin-top:8px;margin-bottom:4px}
     .algo-conf-bar-fill{height:100%;border-radius:99px;background:#22c55e;transition:width .4s}
@@ -341,7 +341,7 @@ router.get("/", requireWebAuth, async (req, res) => {
     .factor-ok  {font-size:11px;color:#4ade80;padding:3px 0}
 
     /* Details */
-    .btn-toggle-details{width:100%;background:none;border:none;border-top:1px solid #1e293b;color:#475569;font-size:12px;padding:10px;cursor:pointer;transition:color .15s}
+    .btn-toggle-details{width:100%;background:none;border:none;border-top:1px solid #1e293b;color: #94a3b8;font-size:12px;padding:10px;cursor:pointer;transition:color .15s}
     .btn-toggle-details:hover{color:#94a3b8}
     .algo-details{padding:14px 18px}
     .breakdown-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
@@ -349,11 +349,31 @@ router.get("/", requireWebAuth, async (req, res) => {
     .bk-title{font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;display:flex;align-items:center;gap:6px}
     .bk-row{display:flex;justify-content:space-between;font-size:11px;padding:3px 0;border-bottom:1px solid #0f1e33}
     .bk-row:last-child{border-bottom:none}
-    .bk-lbl{color:#475569}.bk-val{font-weight:600}
+    .bk-lbl{color: #94a3b8}.bk-val{font-weight:600}
 
     /* Empty / misc */
-    .empty-state{text-align:center;padding:80px 20px;color:#475569}
+    .empty-state{text-align:center;padding:80px 20px;color: #94a3b8}
     .hidden-card{display:none}
+
+    :root{
+      --theme-bg:#05090f;
+      --theme-surface:#0b1120;
+      --theme-surface-soft:#112240;
+      --theme-border:#1a2332;
+      --theme-border-strong:#1d3557;
+      --theme-text:#e2e8f0;
+      --theme-text-secondary:#94a3b8;
+      --theme-text-muted:#64748b;
+    }
+
+    body{background:var(--theme-bg);color:var(--theme-text-secondary)}
+    .sidebar,.topbar,.sum-card,.app-card,.bk-card,.card-num,.algo-result,.source-box,.date-input,.soc-select{background:var(--theme-surface);border-color:var(--theme-border)}
+    .card-header,.sources-grid,.soc-row,.algo-explanation,.algo-factors,.algo-banner{border-color:var(--theme-border)}
+    .sum-card:hover,.app-card:hover,.filter-btn:hover{background:var(--theme-surface-soft);border-color:var(--theme-border-strong)}
+    .page-title,.card-name,.topbar-title,.sum-val{color:var(--theme-text)}
+    .nav-item,.menu-btn,.page-sub,.apps-count,.card-pkg,.sum-lbl,.sum-desc,.src-label,.src-sub,.algo-score-label,.algo-status-label,.algo-conf-label,.algo-src-label,.bk-title{color:var(--theme-text-secondary)}
+    .nav-section-title,.topbar-date,label[for="dateFilter"],.empty-state,.algo-score-max,.bk-lbl{color:var(--theme-text-muted)}
+
     @media(max-width:768px){
       .sources-grid{grid-template-columns:repeat(2,1fr)}
       .algo-banner{grid-template-columns:1fr 1fr}
@@ -411,7 +431,7 @@ router.get("/", requireWebAuth, async (req, res) => {
   <button class="menu-btn" onclick="toggleSidebar()">☰</button>
   <span class="topbar-title">Analysis Results</span>
   <div class="topbar-date">
-    <label for="dateFilter" style="color:#475569">Date:</label>
+    <label for="dateFilter" style="color: #94a3b8">Date:</label>
     <input type="date" id="dateFilter" class="date-input" value="${selectedDate}"
       onchange="window.location.href='/results?date='+this.value"/>
   </div>
@@ -587,8 +607,8 @@ async function runAlgorithm(sha256) {
       const details = bk.details?.[key] || {};
       if (score === null || score === undefined) {
         bkHTML += '<div class="bk-card"><div class="bk-title">' + srcName + '</div>'
-          + '<div class="bk-row"><span class="bk-lbl">Status</span><span class="bk-val" style="color:#475569">Not available</span></div>'
-          + '<div class="bk-row"><span class="bk-lbl">Weight redistributed</span><span class="bk-val" style="color:#334155">—</span></div>'
+          + '<div class="bk-row"><span class="bk-lbl">Status</span><span class="bk-val" style="color: #94a3b8">Not available</span></div>'
+          + '<div class="bk-row"><span class="bk-lbl">Weight redistributed</span><span class="bk-val" style="color: #64748b">—</span></div>'
           + '</div>';
         continue;
       }
@@ -620,7 +640,7 @@ async function runAlgorithm(sha256) {
         + '<div class="bk-row"><span class="bk-lbl">Weight Applied</span><span class="bk-val" style="color:#60a5fa">' + wPct + '</span></div>'
         + '<div class="bk-row"><span class="bk-lbl">Contribution</span><span class="bk-val" style="color:#94a3b8">' + (weight ? (sc2 * weight).toFixed(1) : '—') + ' pts</span></div>'
         + detailRows
-        + (expl ? '<div style="font-size:10px;color:#475569;margin-top:6px;line-height:1.5;border-top:1px solid #1e293b;padding-top:6px">' + expl + '</div>' : '')
+        + (expl ? '<div style="font-size:10px;color: #94a3b8;margin-top:6px;line-height:1.5;border-top:1px solid #1e293b;padding-top:6px">' + expl + '</div>' : '')
         + '</div>';
     }
     document.getElementById('algo-breakdown-' + sha256).innerHTML = bkHTML;

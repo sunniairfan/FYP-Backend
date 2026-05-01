@@ -152,6 +152,18 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
       unknown: systemApps.filter(app => app.status === 'unknown' || !app.status).length,
     };
 
+        const escapeHtmlAttr = (value) => String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+
+        const deviceIds = Array.from(new Set(
+            apps
+                .map(app => (app.device_id == null ? '' : String(app.device_id).trim()))
+                .filter(Boolean)
+        )).sort((a, b) => a.localeCompare(b));
+
     const html = `
 <!DOCTYPE html>
 <html lang="en">
@@ -223,7 +235,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
 
         .nav-section-title {
             padding: 20px 20px 8px;
-            color: #475569;
+            color: #94a3b8;
             font-size: 10px;
             font-weight: 700;
             text-transform: uppercase;
@@ -539,7 +551,27 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             font-size: 14px;
         }
 
+        .date-selector select {
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            padding: 5px;
+            font-size: 14px;
+            min-width: 170px;
+            appearance: none;
+            cursor: pointer;
+        }
+
+        .date-selector select option {
+            background: #112240;
+            color: #e2e8f0;
+        }
+
         .date-selector input:focus {
+            outline: none;
+        }
+
+        .date-selector select:focus {
             outline: none;
         }
 
@@ -608,7 +640,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
         .filter-btn {
             flex: 1;
             padding: 12px 20px;
-            background: #1d3557;
+            background: #112240;
             border: 2px solid #1d3557;
             color: #94a3b8;
             border-radius: 8px;
@@ -623,8 +655,8 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
         }
 
         .filter-btn:hover {
-            background: #112240;
-            border-color: #2563eb;
+            background: #1d3557;
+            border-color: #3b82f6;
             color: #60a5fa;
         }
 
@@ -670,7 +702,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
         }
 
         .mini-stat {
-            background: #0a192f;
+            background: #112240;
             border: 1px solid #1d3557;
             border-radius: 6px;
             padding: 10px 12px;
@@ -710,9 +742,9 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
 
         .table-header {
             display: grid;
-            grid-template-columns: 1.5fr 1.5fr 1.5fr 1.2fr 0.8fr;
+            grid-template-columns: 1.45fr 1.45fr 1.35fr 1.25fr 1fr;
             padding: 10px 15px;
-            background: #112240;
+            background: #1d3557;
             border: 1px solid #1d3557;
             border-radius: 8px 8px 0 0;
             margin-top: 20px;
@@ -720,11 +752,12 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
         }
 
         .table-header div {
-            color: #94a3b8;
-            font-size: 11px;
-            font-weight: 600;
+            color: #e2e8f0;
+            font-size: 13px;
+            font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.7px;
+            font-family: 'Segoe UI', 'Roboto', sans-serif;
         }
 
         .app-list {
@@ -734,9 +767,9 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
 
         .app-row {
             display: grid;
-            grid-template-columns: 1.5fr 1.5fr 1.5fr 1.2fr 0.8fr;
+            grid-template-columns: 1.45fr 1.45fr 1.35fr 1.25fr 1fr;
             padding: 12px 15px;
-            background: #112240;
+            background: #1d3557;
             border: 1px solid #1d3557;
             border-top: none;
             align-items: center;
@@ -744,25 +777,39 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             gap: 10px;
         }
 
+        .app-row > div {
+            min-width: 0;
+            overflow: hidden;
+            padding-right: 8px;
+        }
+
         .app-row:last-child {
             border-radius: 0 0 8px 8px;
         }
 
         .app-row:hover {
-            background: #1d3557;
-            border-color: #2563eb;
+            background: #2a4a7f;
+            border-color: #3b82f6;
         }
 
         .app-name {
             color: #e2e8f0;
             font-weight: 600;
-            font-size: 14px;
+            font-size: 15px;
             margin-bottom: 4px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         .app-meta {
             color: #cbd5e1;
-            font-size: 12px;
+            font-size: 13px;
+            line-height: 1.4;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            word-break: break-word;
         }
 
         .status-badge {
@@ -772,6 +819,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             font-weight: 700;
             text-transform: uppercase;
             display: inline-block;
+            white-space: nowrap;
         }
 
         .status-safe {
@@ -801,20 +849,26 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
 
         .actions {
             display: flex;
-            gap: 6px;
+            gap: 8px;
             align-items: center;
+            justify-content: flex-start;
+            width: 100%;
+            min-width: 0;
+            overflow: hidden;
         }
 
         .view-btn {
             background: #2563eb;
             border: none;
             color: white;
-            padding: 6px 10px;
-            border-radius: 5px;
+            padding: 8px 14px;
+            border-radius: 6px;
             cursor: pointer;
-            font-size: 12px;
+            font-size: 13px;
             font-weight: 600;
             transition: all 0.3s;
+            white-space: nowrap;
+            flex-shrink: 0;
         }
 
         .view-btn:hover {
@@ -822,8 +876,8 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
         }
 
         .delete-icon {
-            width: 28px;
-            height: 28px;
+            width: 32px;
+            height: 32px;
             background: rgba(239, 68, 68, 0.1);
             border: 1px solid #7f1d1d;
             border-radius: 5px;
@@ -834,6 +888,30 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             cursor: pointer;
             transition: all 0.3s;
             font-size: 12px;
+            flex-shrink: 0;
+        }
+
+        .status-analysis-cell {
+            min-width: 0;
+            padding-right: 6px;
+            overflow: hidden;
+        }
+
+        .ml-model-badge {
+            margin-top: 6px;
+            padding: 5px 8px;
+            background: rgba(99, 102, 241, 0.12);
+            border: 1px solid rgba(99, 102, 241, 0.35);
+            border-radius: 5px;
+            color: #8b93ff;
+            font-size: 12px;
+            font-weight: 600;
+            line-height: 1.35;
+            display: inline-block;
+            max-width: 100%;
+            white-space: normal;
+            overflow-wrap: break-word;
+            word-break: break-word;
         }
 
         .delete-icon:hover {
@@ -854,81 +932,175 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(0, 0, 0, 0.8);
+            background: rgba(0, 0, 0, 0.85);
             display: none;
             align-items: center;
             justify-content: center;
             z-index: 2000;
             padding: 20px;
+            backdrop-filter: blur(4px);
         }
 
         .modal-content {
-            background: #112240;
+            background: #0b1120;
             border: 1px solid #1d3557;
-            border-radius: 12px;
-            padding: 30px;
-            max-width: 700px;
+            border-radius: 16px;
+            padding: 36px 40px;
+            max-width: 780px;
             width: 100%;
-            max-height: 80vh;
+            max-height: 85vh;
             overflow-y: auto;
+            box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7);
+        }
+
+        .modal-content::-webkit-scrollbar {
+            width: 6px;
+        }
+        .modal-content::-webkit-scrollbar-track {
+            background: #0b1120;
+        }
+        .modal-content::-webkit-scrollbar-thumb {
+            background: #1d3557;
+            border-radius: 3px;
         }
 
         .modal-content h2 {
             color: white;
-            margin-bottom: 20px;
-            font-size: 20px;
+            margin-bottom: 24px;
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+        }
+
+        .modal-content h3 {
+            font-size: 14px;
+            font-weight: 700;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
         }
 
         .detail-row {
             display: flex;
-            padding: 12px 0;
-            border-bottom: 1px solid #1d3557;
+            padding: 13px 0;
+            border-bottom: 1px solid rgba(29, 53, 87, 0.7);
+            gap: 16px;
         }
 
         .detail-label {
             color: #64748b;
             font-size: 13px;
-            min-width: 150px;
+            min-width: 170px;
             font-weight: 600;
+            padding-top: 1px;
+            flex-shrink: 0;
+            letter-spacing: 0.2px;
         }
 
         .detail-value {
             color: #e2e8f0;
-            font-size: 13px;
+            font-size: 14px;
             flex: 1;
-            word-break: break-all;
+            word-break: break-word;
+            line-height: 1.55;
+            font-weight: 400;
         }
 
         .permissions-list {
             list-style: none;
             padding: 0;
-            margin: 15px 0;
+            margin: 10px 0 0 0;
         }
 
         .permissions-list li {
-            padding: 10px;
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid #7f1d1d;
+            padding: 8px 12px;
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(127, 29, 29, 0.6);
             border-radius: 6px;
-            margin-bottom: 6px;
-            color: #ef4444;
+            margin-bottom: 5px;
+            color: #fca5a5;
             font-size: 12px;
+            line-height: 1.4;
         }
 
         .close-btn {
             background: #2563eb;
             border: none;
             color: white;
-            padding: 10px 20px;
+            padding: 11px 28px;
             border-radius: 8px;
             cursor: pointer;
-            margin-top: 20px;
+            margin-top: 24px;
             font-weight: 600;
+            font-size: 14px;
             float: right;
+            transition: background 0.2s;
         }
 
         .close-btn:hover {
             background: #1e40af;
+        }
+
+        :root {
+            --theme-bg: #05090f;
+            --theme-surface: #0b1120;
+            --theme-surface-soft: #112240;
+            --theme-border: #1a2332;
+            --theme-border-strong: #1d3557;
+            --theme-text: #e2e8f0;
+            --theme-text-secondary: #94a3b8;
+            --theme-text-muted: #64748b;
+        }
+
+        body {
+            background: var(--theme-bg);
+            color: var(--theme-text-secondary);
+        }
+
+        .sidebar,
+        .top-bar,
+        .notification-panel,
+        .modal-content,
+        .app-type-stats,
+        .table-header,
+        .app-row,
+        .date-selector,
+        .stat-card {
+            background: var(--theme-surface);
+            border-color: var(--theme-border);
+        }
+
+        .app-row:hover,
+        .app-type-filter button:hover,
+        .date-selector input:focus,
+        .date-selector select:focus {
+            background: var(--theme-surface-soft);
+            border-color: var(--theme-border-strong);
+        }
+
+        .app-name,
+        .table-header div,
+        .modal-content h2 {
+            color: var(--theme-text);
+        }
+
+        .detail-label,
+        .notification-message,
+        .nav-section-title,
+        .date-selector i,
+        .search-icon {
+            color: var(--theme-text-muted);
+        }
+
+        .app-meta {
+            color: #cbd5e1;
+        }
+
+        .detail-value,
+        .nav-item,
+        .menu-btn,
+        .date-selector input,
+        .date-selector select {
+            color: var(--theme-text-secondary);
         }
 
         @media (max-width: 1200px) {
@@ -1041,6 +1213,13 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                     <i class="fas fa-search" style="color: #64748b;"></i>
                     <input type="text" id="searchInput" placeholder="Search by app name..." style="background: transparent; border: none; color: #94a3b8; padding: 5px; font-size: 14px; width: 250px;" onkeyup="searchApps()">
                 </div>
+                <div class="date-selector">
+                    <i class="fas fa-mobile-alt" style="color: #64748b;"></i>
+                    <select id="deviceIdFilter" onchange="filterByDeviceId()">
+                        <option value="all">All Devices</option>
+                        ${deviceIds.map(deviceId => `<option value="${escapeHtmlAttr(deviceId)}">${deviceId}</option>`).join('')}
+                    </select>
+                </div>
                 <button class="clear-btn" onclick="clearIndex()">
                     <i class="fas fa-trash-alt"></i>
                     Clear Today's Data
@@ -1114,23 +1293,24 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                 </div>
                 <div class="app-list" id="appList">
                     ${userApps.map(app => `
-                        <div class="app-row user-app" data-app-type="user">
+                        <div class="app-row user-app" data-app-type="user" data-device-id="${escapeHtmlAttr(app.device_id || '')}">
                             <div>
                                 <div class="app-name">${app.appName || 'Unknown'}</div>
                                 <div class="app-meta">Uploaded: ${new Date(app.uploadedAt || app.timestamp).toLocaleDateString()}</div>
                             </div>
                             <div>
                                 <div class="app-meta">Package: ${app.packageName || 'N/A'}</div>
+                                <div class="app-meta">Device: ${app.device_id || 'N/A'}</div>
                             </div>
                             <div>
                                 <div class="app-meta">Size: ${app.sizeMB ? app.sizeMB.toFixed(2) + ' MB' : (app.fileSize ? (app.fileSize / (1024 * 1024)).toFixed(2) + ' MB' : 'N/A')}</div>
                                 <div class="app-meta">Hash: ${app.sha256 ? app.sha256.substring(0, 16) + '...' : 'N/A'}</div>
                             </div>
-                            <div>
+                                                        <div class="status-analysis-cell">
                                 <span class="status-badge status-${app.uploadedByUser ? 'uploaded' : (app.status?.toLowerCase() || 'unknown')}">${app.uploadedByUser ? 'Uploaded' : (app.status || 'Unknown')}</span>
                                 <div class="app-meta" style="margin-top: 5px;">Score: ${app.mobsfAnalysis?.security_score || app.virusTotalHashCheck?.detectionRatio || app.virusTotalAnalysis?.detectionRatio || 'N/A'}</div>
                                 ${app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe' ? `
-                                  <div class="app-meta" style="margin-top: 5px; padding: 5px; background: rgba(99, 102, 241, 0.1); border-radius: 3px; color: #6366f1; font-size: 12px; font-weight: 500;">
+                                                                    <div class="ml-model-badge">
                                     🤖 ML Model: ${app.mlPredictionLabel} (${(app.mlPredictionScore ?? 0).toFixed(3)})
                                   </div>
                                 ` : ""}
@@ -1144,23 +1324,24 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                         </div>
                     `).join('')}
                     ${systemApps.map(app => `
-                        <div class="app-row system-app hidden" data-app-type="system">
+                        <div class="app-row system-app hidden" data-app-type="system" data-device-id="${escapeHtmlAttr(app.device_id || '')}">
                             <div>
                                 <div class="app-name">${app.appName || 'Unknown'}</div>
                                 <div class="app-meta">Uploaded: ${new Date(app.uploadedAt || app.timestamp).toLocaleDateString()}</div>
                             </div>
                             <div>
                                 <div class="app-meta">Package: ${app.packageName || 'N/A'}</div>
+                                <div class="app-meta">Device: ${app.device_id || 'N/A'}</div>
                             </div>
                             <div>
                                 <div class="app-meta">Size: ${app.sizeMB ? app.sizeMB.toFixed(2) + ' MB' : (app.fileSize ? (app.fileSize / (1024 * 1024)).toFixed(2) + ' MB' : 'N/A')}</div>
                                 <div class="app-meta">Hash: ${app.sha256 ? app.sha256.substring(0, 16) + '...' : 'N/A'}</div>
                             </div>
-                            <div>
+                                                        <div class="status-analysis-cell">
                                 <span class="status-badge status-${app.uploadedByUser ? 'uploaded' : (app.status?.toLowerCase() || 'unknown')}">${app.uploadedByUser ? 'Uploaded' : (app.status || 'Unknown')}</span>
                                 <div class="app-meta" style="margin-top: 5px;">Score: ${app.mobsfAnalysis?.security_score || app.virusTotalHashCheck?.detectionRatio || app.virusTotalAnalysis?.detectionRatio || 'N/A'}</div>
                                 ${app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe' ? `
-                                  <div class="app-meta" style="margin-top: 5px; padding: 5px; background: rgba(99, 102, 241, 0.1); border-radius: 3px; color: #6366f1; font-size: 12px; font-weight: 500;">
+                                                                    <div class="ml-model-badge">
                                     🤖 ML Model: ${app.mlPredictionLabel} (${(app.mlPredictionScore ?? 0).toFixed(3)})
                                   </div>
                                 ` : ""}
@@ -1307,8 +1488,32 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             window.location.href = '/dashboard?date=' + selectedDate;
         });
 
+        let currentAppType = 'user';
+        let currentDeviceId = 'all';
+
+        function applyCombinedFilters() {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase().trim();
+            const appRows = document.querySelectorAll('.app-row');
+
+            appRows.forEach(row => {
+                const rowAppType = row.getAttribute('data-app-type');
+                const rowDeviceId = row.getAttribute('data-device-id') || '';
+                const appName = row.querySelector('.app-name')?.textContent.toLowerCase() || '';
+
+                const matchesType = rowAppType === currentAppType;
+                const matchesDevice = currentDeviceId === 'all' || rowDeviceId === currentDeviceId;
+                const matchesSearch = appName.includes(searchTerm);
+                const shouldShow = matchesType && matchesDevice && matchesSearch;
+
+                row.classList.toggle('hidden', !matchesType);
+                row.style.display = shouldShow ? '' : 'none';
+            });
+        }
+
         // Filter apps by type (User/System)
         function filterByAppType(appType) {
+            currentAppType = appType;
+
             // Update active button
             document.getElementById('userAppsBtn').classList.toggle('active', appType === 'user');
             document.getElementById('systemAppsBtn').classList.toggle('active', appType === 'system');
@@ -1329,44 +1534,48 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                 userStatsContainer.classList.add('hidden');
             }
 
-            // Show/hide app rows
-            const appRows = document.querySelectorAll('.app-row');
-            appRows.forEach(row => {
-                const rowAppType = row.getAttribute('data-app-type');
-                if (rowAppType === appType) {
-                    row.classList.remove('hidden');
-                } else {
-                    row.classList.add('hidden');
-                }
-            });
+            applyCombinedFilters();
+        }
+
+        function filterByDeviceId() {
+            currentDeviceId = document.getElementById('deviceIdFilter').value || 'all';
+            applyCombinedFilters();
         }
 
         // Search apps by name (works with current filter)
         function searchApps() {
-            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
-            const appRows = document.querySelectorAll('.app-row');
-            let visibleCount = 0;
-            
-            appRows.forEach(row => {
-                const appName = row.querySelector('.app-name')?.textContent.toLowerCase() || '';
-                const isHidden = row.classList.contains('hidden');
-                
-                // Only search within visible app type
-                if (!isHidden && appName.includes(searchTerm)) {
-                    row.style.display = '';
-                    visibleCount++;
-                } else if (!isHidden) {
-                    row.style.display = 'none';
-                } else {
-                    row.style.display = 'none';
-                }
-            });
+            applyCombinedFilters();
         }
 
         // Show app details in modal
         function showDetails(app) {
             const modal = document.getElementById('detailsModal');
             const detailsDiv = document.getElementById('modalDetails');
+            const formatDate = (value) => {
+                if (!value) return 'N/A';
+                const dt = new Date(value);
+                return Number.isNaN(dt.getTime()) ? 'N/A' : dt.toLocaleString();
+            };
+            const toNumberOrNull = (value) => {
+                if (value === undefined || value === null || value === '') return null;
+                const num = Number(value);
+                return Number.isFinite(num) ? num : null;
+            };
+            const vtData = app.virusTotalHashCheck || app.virusTotalAnalysis || {};
+            const hasVtData = Object.keys(vtData).length > 0;
+            const detectedEngines = toNumberOrNull(vtData.detectedEngines ?? app.detectedEngines);
+            const totalEngines = toNumberOrNull(vtData.totalEngines ?? app.totalEngines);
+            const mlScore = toNumberOrNull(app.mlPredictionScore);
+            const riskyPermissionCount = Object.keys(app)
+                .filter((key) => key.startsWith('dangerousPermission') && app[key])
+                .length;
+            const mobsfDangerousPermissionCount = Array.isArray(app.mobsfAnalysis?.dangerous_permissions)
+                ? app.mobsfAnalysis.dangerous_permissions.length
+                : 0;
+            const effectiveDangerousPermissionCount = Math.max(riskyPermissionCount, mobsfDangerousPermissionCount);
+            const highRiskFindings = toNumberOrNull(app.mobsfAnalysis?.high_risk_findings) ?? 0;
+            const totalManifestFindings = toNumberOrNull(app.mobsfAnalysis?.dynamic_analysis?.total_manifest_findings) ?? 0;
+            const totalNetworkFindings = toNumberOrNull(app.mobsfAnalysis?.dynamic_analysis?.total_network_findings) ?? 0;
             
             let html = '<div style="display: grid; gap: 15px;">';
             
@@ -1374,13 +1583,22 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-bottom: 10px;">Basic Information</h3>';
             html += '<div class="detail-row"><div class="detail-label">App Name:</div><div class="detail-value">' + (app.appName || 'N/A') + '</div></div>';
             html += '<div class="detail-row"><div class="detail-label">Package Name:</div><div class="detail-value">' + (app.packageName || 'N/A') + '</div></div>';
+            html += '<div class="detail-row"><div class="detail-label">App Type:</div><div class="detail-value">' + (app.appType || 'N/A') + '</div></div>';
             html += '<div class="detail-row"><div class="detail-label">Size:</div><div class="detail-value">' + (app.fileSize ? (app.fileSize / (1024 * 1024)).toFixed(2) + ' MB' : (app.sizeMB ? app.sizeMB.toFixed(2) + ' MB' : 'N/A')) + '</div></div>';
             html += '<div class="detail-row"><div class="detail-label">Source:</div><div class="detail-value">' + (app.source || app.uploadSource || 'N/A') + '</div></div>';
             html += '<div class="detail-row"><div class="detail-label">Uploaded By User:</div><div class="detail-value">' + (app.uploadedByUser ? 'Yes' : 'No') + '</div></div>';
+            html += '<div class="detail-row"><div class="detail-label">Upload ID:</div><div class="detail-value">' + (app.uploadId || 'N/A') + '</div></div>';
             
             // File Hashes
             html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">File Hashes</h3>';
             html += '<div class="detail-row"><div class="detail-label">SHA-256:</div><div class="detail-value" style="word-break: break-all; font-family: monospace; font-size: 11px;">' + (app.sha256 || 'N/A') + '</div></div>';
+
+            if (app.device_id || app.device_model || app.scan_time) {
+                html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">Device Context</h3>';
+                html += '<div class="detail-row"><div class="detail-label">Device ID:</div><div class="detail-value">' + (app.device_id || 'N/A') + '</div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Device Model:</div><div class="detail-value">' + (app.device_model || 'N/A') + '</div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Device Scan Time:</div><div class="detail-value">' + formatDate(app.scan_time) + '</div></div>';
+            }
             
             // Status Information
             html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">Security Status</h3>';
@@ -1388,51 +1606,112 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             const statusClass = app.uploadedByUser ? 'uploaded' : (app.status?.toLowerCase() || 'unknown');
             html += '<div class="detail-row"><div class="detail-label">Overall Status:</div><div class="detail-value"><span class="status-badge status-' + statusClass + '">' + displayStatus + '</span></div></div>';
             
-            // VirusTotal Analysis
-            const vtData = app.virusTotalHashCheck || app.virusTotalAnalysis;
-            if (vtData) {
-                html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">VirusTotal Analysis</h3>';
-                html += '<div class="detail-row"><div class="detail-label">Detection Ratio:</div><div class="detail-value">' + (vtData.detectionRatio || app.detectionRatio || 'N/A') + '</div></div>';
-                html += '<div class="detail-row"><div class="detail-label">Detected Engines:</div><div class="detail-value">' + (vtData.detectedEngines || app.detectedEngines || '0') + '</div></div>';
-                html += '<div class="detail-row"><div class="detail-label">Total Engines:</div><div class="detail-value">' + (vtData.totalEngines || app.totalEngines || '0') + '</div></div>';
-                html += '<div class="detail-row"><div class="detail-label">Scan Time:</div><div class="detail-value">' + (vtData.scanTime ? new Date(vtData.scanTime).toLocaleString() : 'N/A') + '</div></div>';
+            // Multi-Engine Analysis (VirusTotal)
+            if (hasVtData) {
+                const malCount   = vtData.maliciousCount   ?? null;
+                const suspCount  = vtData.suspiciousCount  ?? null;
+                const harmCount  = vtData.harmlessCount    ?? null;
+                const undetCount = vtData.undetectedCount  ?? null;
+                const scoreColor = (detectedEngines !== null && totalEngines !== null && totalEngines > 0)
+                    ? (detectedEngines === 0 ? '#10b981' : detectedEngines <= 2 ? '#f59e0b' : '#ef4444')
+                    : '#94a3b8';
+                html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">Multi-Engine Analysis</h3>';
+                html += '<div class="detail-row"><div class="detail-label">Detection Ratio:</div><div class="detail-value"><strong style="font-size:16px;color:' + scoreColor + ';">' + (vtData.detectionRatio || app.detectionRatio || 'N/A') + '</strong></div></div>';
+                if (malCount !== null)   html += '<div class="detail-row"><div class="detail-label">Malicious Engines:</div><div class="detail-value" style="color:' + (malCount > 0 ? '#ef4444' : '#10b981') + ';">' + malCount + '</div></div>';
+                if (suspCount !== null)  html += '<div class="detail-row"><div class="detail-label">Suspicious Engines:</div><div class="detail-value" style="color:' + (suspCount > 0 ? '#f59e0b' : '#10b981') + ';">' + suspCount + '</div></div>';
+                if (harmCount !== null)  html += '<div class="detail-row"><div class="detail-label">Clean / Harmless:</div><div class="detail-value" style="color:#10b981;">' + harmCount + '</div></div>';
+                if (undetCount !== null) html += '<div class="detail-row"><div class="detail-label">Undetected:</div><div class="detail-value" style="color:#94a3b8;">' + undetCount + '</div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Total Engines:</div><div class="detail-value">' + (vtData.totalEngines || app.totalEngines || 'N/A') + '</div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Scan Time:</div><div class="detail-value">' + formatDate(vtData.scanTime || app.scanTime) + '</div></div>';
             }
-            
+
+            // Static Analysis (MobSF)
+            if (app.mobsfAnalysis) {
+                const ms = app.mobsfAnalysis;
+                const ssColor = ms.security_score >= 70 ? '#10b981' : ms.security_score < 40 ? '#ef4444' : '#f59e0b';
+                html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">Static Analysis</h3>';
+                html += '<div class="detail-row"><div class="detail-label">Security Score:</div><div class="detail-value"><strong style="font-size:18px;color:' + ssColor + ';">' + (ms.security_score ?? 'N/A') + '/100</strong></div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Scan Type:</div><div class="detail-value">' + (ms.scan_type || app.mobsfScanType || 'N/A') + '</div></div>';
+                html += '<div class="detail-row"><div class="detail-label">High Risk Findings:</div><div class="detail-value" style="color:' + (highRiskFindings > 0 ? '#ef4444' : '#10b981') + ';">' + highRiskFindings + '</div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Manifest Findings:</div><div class="detail-value">' + totalManifestFindings + ' total &mdash; High: <span style="color:' + (ms.dynamic_analysis?.high_manifest_issues > 0 ? '#ef4444' : '#10b981') + ';">' + (ms.dynamic_analysis?.high_manifest_issues ?? 0) + '</span>, Warning: ' + (ms.dynamic_analysis?.warn_manifest_issues ?? 0) + '</div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Network Findings:</div><div class="detail-value">' + totalNetworkFindings + ' total &mdash; High: <span style="color:' + (ms.dynamic_analysis?.high_network_issues > 0 ? '#ef4444' : '#10b981') + ';">' + (ms.dynamic_analysis?.high_network_issues ?? 0) + '</span></div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Dangerous Permissions:</div><div class="detail-value" style="color:' + (effectiveDangerousPermissionCount > 0 ? '#f59e0b' : '#10b981') + ';">' + effectiveDangerousPermissionCount + '</div></div>';
+                if (Array.isArray(ms.dangerous_permissions) && ms.dangerous_permissions.length > 0) {
+                    html += '<div class="detail-row"><div class="detail-label">Permission List:</div><div class="detail-value"><ul class="permissions-list">';
+                    ms.dangerous_permissions.forEach(p => { html += '<li>' + p + '</li>'; });
+                    html += '</ul></div></div>';
+                }
+            }
+
+            // Dynamic Analysis (runtime)
+            const dynData = app.dynamicAnalysis;
+            const hasDynamic = dynData && dynData.status === 'completed';
+            if (hasDynamic) {
+                html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">Dynamic Analysis</h3>';
+                html += '<div class="detail-row"><div class="detail-label">Status:</div><div class="detail-value" style="color:#10b981;">Completed</div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Trackers Detected:</div><div class="detail-value" style="color:' + (dynData.trackers > 0 ? '#f59e0b' : '#10b981') + ';">' + (dynData.trackers ?? 0) + '</div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Network Security Issues:</div><div class="detail-value" style="color:' + (dynData.network_security_issues > 0 ? '#ef4444' : '#10b981') + ';">' + (dynData.network_security_issues ?? 0) + '</div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Domains Contacted:</div><div class="detail-value">' + (dynData.domains_count ?? 0) + '</div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Open Redirects:</div><div class="detail-value" style="color:' + (dynData.open_redirects > 0 ? '#f59e0b' : '#10b981') + ';">' + (dynData.open_redirects ?? 0) + '</div></div>';
+                if (dynData.analysisTimestamp) html += '<div class="detail-row"><div class="detail-label">Analysis Time:</div><div class="detail-value">' + formatDate(dynData.analysisTimestamp) + '</div></div>';
+            }
+
+            // Weighted Risk Algorithm
+            const algoResult = app.algorithmResult;
+            if (algoResult && algoResult.finalScore !== undefined) {
+                const fsColor = algoResult.finalScore < 30 ? '#10b981' : algoResult.finalScore < 55 ? '#f59e0b' : '#ef4444';
+                const stColor = algoResult.finalStatus === 'SAFE' ? '#10b981' : algoResult.finalStatus === 'SUSPICIOUS' ? '#f59e0b' : '#ef4444';
+                html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">Weighted Risk Algorithm</h3>';
+                html += '<div class="detail-row"><div class="detail-label">Risk Score:</div><div class="detail-value"><strong style="font-size:20px;color:' + fsColor + ';">' + algoResult.finalScore + '/100</strong></div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Risk Status:</div><div class="detail-value"><strong style="color:' + stColor + ';">' + (algoResult.finalStatus || 'N/A') + '</strong></div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Confidence:</div><div class="detail-value">' + (algoResult.confidence ?? 'N/A') + '% &nbsp;<span style="color:#64748b;font-size:11px;">(' + (algoResult.dataSourcesCount ?? 0) + '/4 sources)</span></div></div>';
+                if (algoResult.finalExplanation) {
+                    html += '<div class="detail-row"><div class="detail-label">Summary:</div><div class="detail-value" style="color:#e2e8f0;">' + algoResult.finalExplanation + '</div></div>';
+                }
+                // Per-source breakdown
+                const bk = algoResult.breakdown;
+                if (bk && bk.sources) {
+                    html += '<div class="detail-row" style="margin-top:8px;"><div class="detail-label">Source Scores:</div><div class="detail-value"><table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+                        '<tr style="color:#64748b;"><th style="text-align:left;padding:2px 6px;">Source</th><th style="text-align:center;padding:2px 6px;">Score</th><th style="text-align:center;padding:2px 6px;">Weight</th></tr>';
+                    const srcMap = [
+                        ['Multi-Engine (VT)', bk.sources.virustotal,   bk.weights?.virustotal],
+                        ['Static (MobSF)',    bk.sources.mobsfStatic,  bk.weights?.mobsfStatic],
+                        ['Dynamic',          bk.sources.mobsfDynamic, bk.weights?.mobsfDynamic],
+                        ['ML Model',         bk.sources.ml,           bk.weights?.ml],
+                    ];
+                    srcMap.forEach(([name, score, weight]) => {
+                        if (score !== null && score !== undefined) {
+                            const sc = algoResult.finalScore < 30 ? '#10b981' : algoResult.finalScore < 55 ? '#f59e0b' : '#ef4444';
+                            const rowColor = score < 30 ? '#10b981' : score < 55 ? '#f59e0b' : '#ef4444';
+                            html += '<tr style="border-top:1px solid #1d3557;">'
+                                + '<td style="padding:3px 6px;color:#94a3b8;">' + name + '</td>'
+                                + '<td style="padding:3px 6px;text-align:center;color:' + rowColor + ';font-weight:600;">' + score + '</td>'
+                                + '<td style="padding:3px 6px;text-align:center;color:#64748b;">' + (weight !== undefined ? Math.round(weight * 100) + '%' : '—') + '</td>'
+                                + '</tr>';
+                        }
+                    });
+                    html += '</table></div></div>';
+                }
+                // Risk factors
+                if (Array.isArray(algoResult.riskFactors) && algoResult.riskFactors.length > 0) {
+                    html += '<div class="detail-row"><div class="detail-label">Risk Factors:</div><div class="detail-value"><ul class="permissions-list" style="color:#fca5a5;">';
+                    algoResult.riskFactors.forEach(f => { html += '<li>' + f + '</li>'; });
+                    html += '</ul></div></div>';
+                }
+                if (Array.isArray(algoResult.positiveFactors) && algoResult.positiveFactors.length > 0) {
+                    html += '<div class="detail-row"><div class="detail-label">Positive Factors:</div><div class="detail-value"><ul class="permissions-list" style="color:#6ee7b7;">';
+                    algoResult.positiveFactors.forEach(f => { html += '<li>' + f + '</li>'; });
+                    html += '</ul></div></div>';
+                }
+            }
+
             // ML Prediction Analysis (only shown for non-safe apps)
             if (app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe') {
-                html += '<h3 style="color: #6366f1; border-bottom: 1px solid #4f46e5; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">🤖 Machine Learning Model Analysis</h3>';
+                html += '<h3 style="color: #6366f1; border-bottom: 1px solid #4f46e5; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">🤖 Machine Learning Model</h3>';
                 html += '<div class="detail-row"><div class="detail-label">Prediction Label:</div><div class="detail-value"><strong style="color: #6366f1; font-size: 16px;">' + (app.mlPredictionLabel || 'N/A') + '</strong></div></div>';
                 html += '<div class="detail-row"><div class="detail-label">ML Score:</div><div class="detail-value"><strong style="color: #6366f1; font-size: 18px;">' + (app.mlPredictionScore ?? 0).toFixed(3) + '</strong></div></div>';
                 if (app.mlAnalysisTimestamp) {
-                    html += '<div class="detail-row"><div class="detail-label">Analysis Time:</div><div class="detail-value">' + new Date(app.mlAnalysisTimestamp).toLocaleString() + '</div></div>';
-                }
-                html += '<div class="detail-row" style="padding-top: 12px; border-top: 1px solid #4f46e5; margin-top: 12px;"><div class="detail-label">Status:</div><div class="detail-value" style="color: #94a3b8; font-size: 12px;">ML prediction is shown separately for reference. The app status is determined by VirusTotal analysis.</div></div>';
-            }
-            
-            // MobSF Analysis
-            if (app.mobsfAnalysis) {
-                html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">MobSF Security Analysis</h3>';
-                html += '<div class="detail-row"><div class="detail-label">Security Score:</div><div class="detail-value"><strong style="font-size: 18px; color: ' + (app.mobsfAnalysis.security_score >= 70 ? '#10b981' : app.mobsfAnalysis.security_score < 40 ? '#ef4444' : '#f59e0b') + ';">' + (app.mobsfAnalysis.security_score || 'N/A') + '/100</strong></div></div>';
-                html += '<div class="detail-row"><div class="detail-label">Scan Type:</div><div class="detail-value">' + (app.mobsfAnalysis.scan_type || app.mobsfScanType || 'N/A') + '</div></div>';
-                html += '<div class="detail-row"><div class="detail-label">File Name:</div><div class="detail-value">' + (app.mobsfAnalysis.file_name || app.apkFileName || 'N/A') + '</div></div>';
-                html += '<div class="detail-row"><div class="detail-label">High Risk Findings:</div><div class="detail-value">' + (app.mobsfAnalysis.high_risk_findings || '0') + '</div></div>';
-                
-                // Dangerous Permissions from MobSF
-                if (app.mobsfAnalysis.dangerous_permissions && app.mobsfAnalysis.dangerous_permissions.length > 0) {
-                    html += '<div class="detail-row"><div class="detail-label">Dangerous Permissions (' + app.mobsfAnalysis.dangerous_permissions.length + '):</div><div class="detail-value"><ul class="permissions-list">';
-                    app.mobsfAnalysis.dangerous_permissions.forEach(perm => {
-                        html += '<li>' + perm + '</li>';
-                    });
-                    html += '</ul></div></div>';
-                }
-                
-                // Legacy permissions field support
-                if (app.mobsfAnalysis.permissions && app.mobsfAnalysis.permissions.length > 0) {
-                    html += '<div class="detail-row"><div class="detail-label">Permissions (' + app.mobsfAnalysis.permissions.length + '):</div><div class="detail-value"><ul class="permissions-list">';
-                    app.mobsfAnalysis.permissions.forEach(perm => {
-                        html += '<li>' + perm + '</li>';
-                    });
-                    html += '</ul></div></div>';
+                    html += '<div class="detail-row"><div class="detail-label">Analysis Time:</div><div class="detail-value">' + formatDate(app.mlAnalysisTimestamp) + '</div></div>';
                 }
             }
             
@@ -1463,21 +1742,9 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             
             // Timestamps
             html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">Timestamps</h3>';
-            html += '<div class="detail-row"><div class="detail-label">Uploaded:</div><div class="detail-value">' + new Date(app.uploadedAt || app.timestamp).toLocaleString() + '</div></div>';
+            html += '<div class="detail-row"><div class="detail-label">Uploaded:</div><div class="detail-value">' + formatDate(app.uploadedAt || app.timestamp) + '</div></div>';
             if (app.scanTime) {
-                html += '<div class="detail-row"><div class="detail-label">Scan Time:</div><div class="detail-value">' + new Date(app.scanTime).toLocaleString() + '</div></div>';
-            }
-            
-            // Error Information (if any)
-            const vtErrorData = app.virusTotalHashCheck || app.virusTotalAnalysis;
-            if (app.mobsfError || (vtErrorData && vtErrorData.error)) {
-                html += '<h3 style="color: #ef4444; border-bottom: 1px solid #7f1d1d; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">Errors</h3>';
-                if (app.mobsfError) {
-                    html += '<div class="detail-row"><div class="detail-label">MobSF Error:</div><div class="detail-value" style="color: #ef4444;">' + app.mobsfError + '</div></div>';
-                }
-                if (vtErrorData && vtErrorData.error) {
-                    html += '<div class="detail-row"><div class="detail-label">VirusTotal Error:</div><div class="detail-value" style="color: #ef4444;">' + vtErrorData.error + '</div></div>';
-                }
+                html += '<div class="detail-row"><div class="detail-label">Scan Time:</div><div class="detail-value">' + formatDate(app.scanTime) + '</div></div>';
             }
             
             html += '</div>';
@@ -1541,6 +1808,8 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                 });
             }
         }
+
+        applyCombinedFilters();
     </script>
 </body>
 </html>

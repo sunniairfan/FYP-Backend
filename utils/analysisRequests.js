@@ -149,6 +149,7 @@ const createAnalysisRequestFromHashCheck = async (esClient, payload) => {
   const indexName = getRequestsIndexName();
   const requestId = `vt_hash_req_${sha256}`;
   const createdAt = new Date().toISOString();
+  const soarId = `SOAR-${Date.now()}-${Math.random().toString(16).slice(2, 10).toUpperCase()}`;
   
   console.log(`📋 [DEDUP CHECK] RequestId: ${requestId} - checking if already exists`);
 
@@ -166,6 +167,7 @@ const createAnalysisRequestFromHashCheck = async (esClient, payload) => {
     sourceIndex: sourceIndex || "unknown",
     sourceDate: sourceDate || createdAt.slice(0, 10),
     createdAt,
+    soarId,
   };
 
   try {

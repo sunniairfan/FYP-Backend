@@ -109,14 +109,14 @@ const buildAuthPage = (title, body) => `
     .status-msg.error { background: rgba(239,68,68,.1); color: #fca5a5; border: 1px solid rgba(239,68,68,.2); }
     .status-msg.success { background: rgba(34,197,94,.1); color: #86efac; border: 1px solid rgba(34,197,94,.2); }
     .status-msg.info { background: rgba(59,130,246,.1); color: #93c5fd; border: 1px solid rgba(59,130,246,.2); }
-    .hint-text { font-size: 12px; color: #475569; margin-top: 5px; line-height: 1.5; }
+    .hint-text { font-size: 12px; color: #94a3b8; margin-top: 5px; line-height: 1.5; }
     .pw-rules { margin-top: 6px; }
     .pw-rules div { font-size: 12px; line-height: 1.8; }
     .divider { border: none; border-top: 1px solid #1e293b; margin: 20px 0; }
     .links { text-align: center; margin-top: 18px; }
     .links a { color: #3b82f6; text-decoration: none; font-size: 13px; }
     .links a:hover { text-decoration: underline; color: #60a5fa; }
-    .links span { color: #334155; margin: 0 8px; }
+    .links span { color: #64748b; margin: 0 8px; }
     .alert-box {
       padding: 12px 14px; border-radius: 10px; font-size: 13px;
       margin-bottom: 16px; line-height: 1.5;
@@ -580,7 +580,7 @@ router.get("/signup", (req, res) => {
              placeholder="admin@example.com"
              title="Use a valid email address — you may need it for password recovery" />
       <label for="sigPassword">Password
-        <span style="color:#475569;font-size:11px;margin-left:6px;" title="Requirements: 6+ characters, 1 uppercase, 1 number, 1 dollar sign">ⓘ hover for rules</span>
+        <span style="color: #94a3b8;font-size:11px;margin-left:6px;" title="Requirements: 6+ characters, 1 uppercase, 1 number, 1 dollar sign">ⓘ hover for rules</span>
       </label>
       <div class="pw-wrap">
         <input type="password" id="sigPassword" name="password" required autocomplete="new-password"
@@ -702,7 +702,7 @@ router.get("/forgot-password", (req, res) => {
         <span style="font-size:12px;">Check your inbox and spam/junk folder. Code expires in 10 minutes.</span>
       </div>
       <label for="codeInput">Verification Code
-        <span style="color:#475569;font-size:11px;margin-left:6px;" title="Enter the 6-digit numeric code from your email.">ⓘ</span>
+        <span style="color: #94a3b8;font-size:11px;margin-left:6px;" title="Enter the 6-digit numeric code from your email.">ⓘ</span>
       </label>
       <input type="text" id="codeInput" inputmode="numeric" maxlength="6" pattern="[0-9]{6}"
              placeholder="1 2 3 4 5 6"
@@ -722,7 +722,7 @@ router.get("/forgot-password", (req, res) => {
     <div id="step3" style="display:none;">
       <p style="font-size:13px;color:#64748b;margin-bottom:12px;">Step 3 of 3 — Set your new password.</p>
       <label for="newPw">New Password
-        <span style="color:#475569;font-size:11px;margin-left:6px;" title="Min 6 characters, 1 uppercase letter, 1 number, 1 dollar sign ($)">ⓘ</span>
+        <span style="color: #94a3b8;font-size:11px;margin-left:6px;" title="Min 6 characters, 1 uppercase letter, 1 number, 1 dollar sign ($)">ⓘ</span>
       </label>
       <div class="pw-wrap">
         <input type="password" id="newPw" required autocomplete="new-password"
@@ -1022,7 +1022,7 @@ router.get("/change-password", requireAdminSession, (req, res) => {
         <button type="button" class="pw-toggle" onclick="togglePw('currentPassword',this)" tabindex="-1">👁</button>
       </div>
       <label for="newPassword">New Password
-        <span style="color:#475569;font-size:11px;margin-left:6px;" title="Min 6 chars, 1 uppercase, 1 number, 1 dollar sign">ⓘ</span>
+        <span style="color: #94a3b8;font-size:11px;margin-left:6px;" title="Min 6 chars, 1 uppercase, 1 number, 1 dollar sign">ⓘ</span>
       </label>
       <div class="pw-wrap">
         <input type="password" id="newPassword" required autocomplete="new-password"

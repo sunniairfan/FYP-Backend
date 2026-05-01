@@ -576,8 +576,8 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
         <td style="font-weight:${isDetected?'600':'400'};color:${isDetected?'#f1f5f9':'#94a3b8'}">${esc(engine)}</td>
         <td><span style="background:${catBg};color:${catColor};padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600">${cat.toUpperCase()}</span></td>
         <td style="color:${isDetected?'#fca5a5':'#475569'};font-size:11px">${esc(threat) || (cat==='undetected'?'—':'Clean')}</td>
-        <td style="color:#475569;font-size:10px;font-family:monospace">${esc(ver)}</td>
-        <td style="color:#334155;font-size:10px">${esc(update)}</td>
+        <td style="color: #94a3b8;font-size:10px;font-family:monospace">${esc(ver)}</td>
+        <td style="color: #64748b;font-size:10px">${esc(update)}</td>
       </tr>`;
     };
 
@@ -624,7 +624,7 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
     th{background:#070d1a;color:#94a3b8;padding:9px 10px;text-align:left;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #1e293b}
     td{padding:8px 10px;border-bottom:1px solid #0d1a2e;vertical-align:top}
     tr:last-child td{border-bottom:none}
-    tr:hover td{background:rgba(30,58,100,.2)}
+    tr:hover td{background:rgba(61,90,138,.8)}
     /* Info rows */
     .info-row{display:flex;justify-content:space-between;align-items:flex-start;padding:8px 0;border-bottom:1px solid #0d1a2e;gap:12px}
     .info-row:last-child{border-bottom:none}
@@ -638,7 +638,7 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
     .chip-gray{background:#1e293b;color:#94a3b8;border:1px solid #334155}
     /* Sections for detected/all toggle */
     .tab-bar{display:flex;gap:8px;margin-bottom:12px}
-    .tab{padding:6px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid #334155;background:#1e293b;color:#94a3b8;transition:.15s}
+    .tab{padding:6px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid #4a7aaa;background:#2d5a8a;color:#94a3b8;transition:.15s}
     .tab.active{background:#1d4ed8;color:#fff;border-color:#1d4ed8}
     .engine-section{display:none}.engine-section.active{display:block}
     /* Collapsible */
@@ -739,7 +739,7 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
         ${maliciousEngines.map(([engine, r]) => `<tr>
           <td style="font-weight:600;color:#fca5a5">${esc(engine)}</td>
           <td style="color:#f87171;font-style:${r.result?'normal':'italic'}">${esc(r.result) || 'Detected (no name)'}</td>
-          <td style="font-family:monospace;font-size:10px;color:#475569">${esc(r.engine_version || '—')}</td>
+          <td style="font-family:monospace;font-size:10px;color: #94a3b8">${esc(r.engine_version || '—')}</td>
         </tr>`).join('')}
       </table></div>
     </div>` : ''}
@@ -752,7 +752,7 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
         ${suspiciousEngines.map(([engine, r]) => `<tr>
           <td style="font-weight:600;color:#fcd34d">${esc(engine)}</td>
           <td style="color:#fbbf24">${esc(r.result) || 'Flagged as suspicious'}</td>
-          <td style="font-family:monospace;font-size:10px;color:#475569">${esc(r.engine_version || '—')}</td>
+          <td style="font-family:monospace;font-size:10px;color: #94a3b8">${esc(r.engine_version || '—')}</td>
         </tr>`).join('')}
       </table></div>
     </div>` : ''}
@@ -810,7 +810,7 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
         <div class="stat-val sv-red">${vt.totalVotes.malicious || 0}</div>
       </div>` : ''}
     </div>
-    <p style="font-size:11px;color:#475569;margin-top:10px">The reputation score is derived from the votes of VirusTotal users and trusted security vendors. Negative scores indicate the community considers this file harmful.</p>
+    <p style="font-size:11px;color: #94a3b8;margin-top:10px">The reputation score is derived from the votes of VirusTotal users and trusted security vendors. Negative scores indicate the community considers this file harmful.</p>
   </div>` : ''}
 
   <!-- ── 6. File Information ─────────────────────────────────────── -->
@@ -873,7 +873,7 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
     <a class="vt-ext-link" href="${vtLink}" target="_blank" rel="noopener">
       🔗 View Full Report on VirusTotal.com ↗
     </a>
-    <p style="font-size:11px;color:#334155">VirusTotal is a free online service by Google that analyses files using 70+ antivirus engines and website scanners.</p>
+    <p style="font-size:11px;color: #64748b">VirusTotal is a free online service by Google that analyses files using 70+ antivirus engines and website scanners.</p>
   </div>
 
 </div>
@@ -1339,6 +1339,15 @@ router.get("/apps", requireWebAuth, async (req, res) => {
     const userApps = apps.filter(app => app.appType === 'user');
     const systemApps = apps.filter(app => app.appType === 'system');
 
+    // Helper: escape values for HTML attributes to prevent XSS
+    function escapeHtmlAttr(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    // Unique sorted device IDs for filter dropdown
+    const deviceIds = [...new Set(apps.map(a => a.device_id).filter(Boolean))].sort();
+
     let html = `
       <!DOCTYPE html>
       <html lang="en">
@@ -1417,7 +1426,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
 
           .nav-section-title {
             padding: 20px 20px 8px;
-            color: #475569;
+            color: #94a3b8;
             font-size: 10px;
             font-weight: 700;
             text-transform: uppercase;
@@ -1748,10 +1757,13 @@ router.get("/apps", requireWebAuth, async (req, res) => {
 
           table {
             width: 100%;
-            border-collapse: collapse;
+            border-collapse: separate;
+            border-spacing: 0;
             background: #112240;
             border-radius: 8px;
             overflow: hidden;
+            border: 1px solid #27456c;
+            box-shadow: 0 0 0 1px rgba(39, 69, 108, 0.22) inset;
           }
 
           thead {
@@ -1759,64 +1771,146 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           }
 
           th {
-            padding: 8px 6px;
+            padding: 10px 10px;
             text-align: left;
-            color: #94a3b8;
-            font-size: 10px;
-            font-weight: 600;
+            color: #e2e8f0;
+            font-size: 12px;
+            font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            border-bottom: 1px solid #1d3557;
+            letter-spacing: 0.7px;
+            border-bottom: 1px solid #27456c;
+            border-right: 1px solid rgba(39, 69, 108, 0.45);
           }
 
-          th:nth-child(1) { width: 10%; }
-          th:nth-child(2) { width: 9%; }
-          th:nth-child(3) { width: 8%; }
-          th:nth-child(4) { width: 21%; }
-          th:nth-child(5) { width: 52%; }
+          th:last-child {
+            border-right: none;
+          }
+
+          th:nth-child(1) { width: 22%; }
+          th:nth-child(2) { width: 10%; }
+          th:nth-child(3) { width: 25%; }
+          th:nth-child(4) { width: 43%; }
 
           td {
-            padding: 10px 8px;
-            border-bottom: 1px solid #1d3557;
+            padding: 10px 10px;
+            border-bottom: 1px solid rgba(39, 69, 108, 0.42);
+            border-right: 1px solid rgba(39, 69, 108, 0.28);
             color: #cbd5e1;
             font-size: 13px;
+            vertical-align: top;
           }
 
-          td:nth-child(1) { width: 10%; }
-          td:nth-child(2) { width: 9%; }
-          td:nth-child(3) { width: 8%; }
-          td:nth-child(4) { width: 21%; }
-          td:nth-child(5) { width: 52%; }
+          td:last-child {
+            border-right: none;
+          }
+
+          td:nth-child(1) { width: 22%; }
+          td:nth-child(2) { width: 10%; }
+          td:nth-child(3) { width: 25%; }
+          td:nth-child(4) { width: 43%; }
+
+          td:last-child td {
+            border-bottom: none;
+          }
 
           tr:last-child td {
             border-bottom: none;
           }
 
-          tr:hover {
-            background: #1d3557;
+          tbody tr:nth-child(odd) td {
+            background: rgba(11, 17, 32, 0.38);
+          }
+
+          tbody tr:nth-child(even) td {
+            background: rgba(11, 17, 32, 0.18);
+          }
+
+          tr:hover td {
+            background: rgba(29, 53, 87, 0.62);
+          }
+
+          /* High Detection Alert - Apps with >30 detected engines */
+          tr.high-detection td {
+            background: linear-gradient(90deg, rgba(239, 68, 68, 0.12) 0%, rgba(239, 68, 68, 0.06) 100%) !important;
+            border: 1px solid rgba(239, 68, 68, 0.4) !important;
+          }
+
+          tr.high-detection:hover td {
+            background: linear-gradient(90deg, rgba(239, 68, 68, 0.18) 0%, rgba(239, 68, 68, 0.12) 100%) !important;
+            border-color: rgba(239, 68, 68, 0.6) !important;
+          }
+
+          tr.high-detection td:first-child::before {
+            content: "⚠️";
+            margin-right: 6px;
+            font-size: 14px;
           }
 
           .file-info {
-            font-size: 10px;
+            font-size: 12px;
             color: #94a3b8;
-            margin-top: 2px;
+            margin-top: 3px;
           }
 
-          td:nth-child(1), td:nth-child(2), td:nth-child(3) {
-            padding: 10px 6px;
-            font-size: 12px;
+          .app-package-cell {
+            line-height: 1.35;
+          }
+
+          .app-package-meta {
+            margin-top: 6px;
+            display: grid;
+            gap: 2px;
+          }
+
+          .meta-line {
+            font-size: 11px;
+            color: #94a3b8;
+            line-height: 1.35;
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+          }
+
+          .meta-line strong {
+            color: #cbd5e1;
+            font-weight: 600;
+            min-width: 58px;
+          }
+
+          .meta-value-id {
+            font-family: 'Courier New', monospace;
+            color: #cbd5e1;
+            word-break: break-all;
+          }
+
+          .meta-value-device {
+            color: #60a5fa;
+          }
+
+          .upload-ref {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #cbd5e1;
+            font-family: 'Courier New', monospace;
+            word-break: break-all;
+            opacity: 0.9;
+          }
+
+          td:nth-child(1), td:nth-child(2) {
+            font-size: 13px;
           }
 
           .app-name {
             font-weight: 600;
             color: white;
-            font-size: 12px;
+            font-size: 14px;
           }
 
           .package-name {
             font-family: 'Courier New', monospace;
-            font-size: 10px;
+            font-size: 11px;
             color: #94a3b8;
+            margin-top: 3px;
           }
 
           .permissions {
@@ -1862,50 +1956,64 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           .actions {
             padding: 10px 6px;
             position: relative;
+            border-left: 1px solid rgba(39, 69, 108, 0.65);
           }
 
           .analysis-columns {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
-            gap: 8px;
-            margin-bottom: 10px;
+            gap: 12px;
+            margin-bottom: 0;
+            padding: 8px;
+            background: rgba(9, 14, 28, 0.55);
+            border: 1px solid rgba(39, 69, 108, 0.46);
+            border-radius: 10px;
           }
 
           .analysis-col {
-            background: rgba(255, 255, 255, 0.05);
-            padding: 8px;
-            border-radius: 4px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(15, 23, 42, 0.55);
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid rgba(59, 130, 246, 0.32);
             display: flex;
             flex-direction: column;
             gap: 6px;
             align-items: center;
             text-align: center;
+            min-height: 126px;
+            box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.06);
           }
 
           .col-title {
-            font-size: 9px;
+            font-size: 10px;
             font-weight: 700;
-            color: #cbd5e1;
+            color: #e2e8f0;
             text-transform: uppercase;
-            letter-spacing: 0.3px;
-            margin-bottom: 2px;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
           }
 
           .bottom-actions {
             display: flex;
-            justify-content: center;
-            gap: 6px;
+            justify-content: flex-start;
+            gap: 8px;
             flex-wrap: wrap;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(39, 69, 108, 0.5);
+          }
+
+          .btn-delete-action {
+            margin-left: auto;
           }
 
           button {
             padding: 7px 10px;
             border: none;
-            border-radius: 4px;
+            border-radius: 5px;
             cursor: pointer;
-            font-size: 10px;
-            font-weight: 500;
+            font-size: 11px;
+            font-weight: 600;
             transition: all 0.2s;
             margin: 0;
             white-space: nowrap;
@@ -1913,14 +2021,14 @@ router.get("/apps", requireWebAuth, async (req, res) => {
 
           .analysis-col button {
             width: 100%;
-            font-size: 9px;
-            padding: 6px 8px;
+            font-size: 11px;
+            padding: 7px 8px;
           }
 
           .bottom-actions button {
             flex: 0 0 auto;
-            font-size: 10px;
-            padding: 7px 10px;
+            font-size: 11px;
+            padding: 7px 12px;
           }
 
           .btn-mobsf, .btn-report, .btn-view, .btn-vt, .btn-download, .btn-analysis, .btn-dynamic {
@@ -1928,17 +2036,69 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             color: white;
           }
 
+          .btn-mobsf,
+          .btn-dynamic,
+          .btn-vt {
+            background: #2563eb;
+            color: #ffffff;
+          }
+
+          .btn-report,
+          .btn-view,
+          .btn-download,
+          .btn-analysis {
+            background: #1e3a5f;
+            color: #e2e8f0;
+            border: 1px solid #3b5a8f;
+            padding: 8px 16px;
+            font-weight: 600;
+          }
+
+          .btn-report:hover,
+          .btn-view:hover,
+          .btn-download:hover,
+          .btn-analysis:hover {
+            background: #2a4a7f;
+            border-color: #60a5fa;
+            color: #f1f5f9;
+            cursor: pointer;
+          }
+
           .btn-delete-action {
-            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-            color: white;
-            border: none;
-            padding: 7px 14px;
+            width: 32px;
+            height: 32px;
+            min-width: 32px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 5px;
+            background: rgba(239, 68, 68, 0.1);
+            color: #ef4444;
+            border: 1px solid #7f1d1d;
+            font-size: 12px;
+            line-height: 1;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: none;
           }
 
           .btn-delete-action:hover {
-            background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
+            background: #7f1d1d;
+            color: #ffffff;
+            border-color: #7f1d1d;
+            transform: none;
+            box-shadow: none;
+          }
+
+          .btn-delete-action:active {
+            transform: translateY(0);
+            box-shadow: none;
+          }
+
+          .btn-delete-action:focus-visible {
+            outline: 2px solid rgba(252, 165, 165, 0.9);
+            outline-offset: 2px;
           }
 
           .btn-remarks {
@@ -1950,7 +2110,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             background: #047857;
           }
 
-          .btn-mobsf:hover, .btn-report:hover, .btn-view:hover, .btn-vt:hover, .btn-download:hover, .btn-analysis:hover, .btn-dynamic:hover {
+          .btn-mobsf:hover, .btn-vt:hover, .btn-dynamic:hover {
             background: #1d4ed8;
           }
 
@@ -2055,6 +2215,80 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           .btn-cancel:hover {
             background: #1f2937;
           }
+
+          :root {
+            --theme-bg: #05090f;
+            --theme-surface: #0b1120;
+            --theme-surface-soft: #112240;
+            --theme-border: #1a2332;
+            --theme-border-strong: #1d3557;
+            --theme-text: #e2e8f0;
+            --theme-text-secondary: #94a3b8;
+            --theme-text-muted: #64748b;
+          }
+
+          body {
+            background: var(--theme-bg);
+            color: var(--theme-text-secondary);
+          }
+
+          .sidebar,
+          .top-bar,
+          .date-selector,
+          .search-section,
+          .mobsf-status,
+          .notification-panel,
+          .stat-card,
+          table,
+          thead,
+          tr,
+          .analysis-col,
+          .app-type-stats {
+            border-color: var(--theme-border);
+          }
+
+          .sidebar,
+          .top-bar,
+          .stat-card,
+          table,
+          .analysis-col,
+          .mobsf-status,
+          .date-selector,
+          .search-section {
+            background: var(--theme-surface);
+          }
+
+          tr:hover,
+          .analysis-col:hover,
+          .btn-cancel:hover {
+            background: var(--theme-surface-soft);
+          }
+
+          .app-name,
+          th,
+          .col-title,
+          .user-info span {
+            color: var(--theme-text);
+          }
+
+          .file-info,
+          .package-name,
+          .nav-item,
+          .menu-btn,
+          .meta-line,
+          .meta-line strong,
+          .mobsf-info,
+          .vt-info,
+          .upload-ref,
+          .meta-value-id {
+            color: #cbd5e1;
+          }
+
+          .nav-section-title,
+          .subtitle,
+          .stat-label {
+            color: var(--theme-text-muted);
+          }
         </style>
       </head>
       <body>
@@ -2129,7 +2363,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
               
               <div class="search-section">
                 <i class="fas fa-search" style="color: #64748b;"></i>
-                <input type="text" id="search-input" placeholder="Search by app name..." onkeyup="performSearch()">
+                <input type="text" id="search-input" placeholder="Search by app name..." onkeyup="applyCombinedFilters()">
               </div>
 
               <button class="clear-btn" onclick="clearTodayData()">
@@ -2138,14 +2372,23 @@ router.get("/apps", requireWebAuth, async (req, res) => {
               </button>
             </div>
             
-            <!-- Filter Dropdown -->
-            <div style="margin-bottom: 20px;">
-              <label for="appTypeFilter" style="color: #94a3b8; font-weight: 500; margin-right: 10px;">Filter by App Type:</label>
-              <select id="appTypeFilter" onchange="filterAppsByType()" style="padding: 8px 12px; background: #1e293b; color: white; border: 1px solid #334155; border-radius: 6px; font-size: 14px; cursor: pointer;">
-                <option value="all">All Apps</option>
-                <option value="user">User Apps Only</option>
-                <option value="system">System Apps Only</option>
-              </select>
+            <!-- Filter Dropdowns -->
+            <div style="margin-bottom: 20px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap;">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <label for="appTypeFilter" style="color: #94a3b8; font-weight: 600; font-size:13px;">App Type:</label>
+                <select id="appTypeFilter" onchange="applyCombinedFilters()" style="padding: 8px 12px; background: #1e293b; color: white; border: 1px solid #334155; border-radius: 6px; font-size: 14px; cursor: pointer;">
+                  <option value="all">All Apps</option>
+                  <option value="user">User Apps Only</option>
+                  <option value="system">System Apps Only</option>
+                </select>
+              </div>
+              <div style="display:flex; align-items:center; gap:10px;">
+                <label for="deviceIdFilter" style="color: #94a3b8; font-weight: 600; font-size:13px;">Device:</label>
+                <select id="deviceIdFilter" onchange="applyCombinedFilters()" style="padding: 8px 12px; background: #1e293b; color: white; border: 1px solid #334155; border-radius: 6px; font-size: 14px; cursor: pointer;">
+                  <option value="all">All Devices</option>
+                  ${deviceIds.map(d => `<option value="${escapeHtmlAttr(d)}">${escapeHtmlAttr(d)}</option>`).join('')}
+                </select>
+              </div>
             </div>
             
             <!-- Total Apps Stats -->
@@ -2185,9 +2428,8 @@ router.get("/apps", requireWebAuth, async (req, res) => {
         <table>
           <thead>
             <tr>
-              <th>App Details</th>
-              <th>Package Info</th>
-              <th>File Information</th>
+              <th>App & Package</th>
+              <th>File Info</th>
               <th>Status & Analysis</th>
               <th class="actions">Actions</th>
             </tr>
@@ -2204,6 +2446,12 @@ router.get("/apps", requireWebAuth, async (req, res) => {
         const hasDynamicAnalysis = app.dynamicAnalysis && app.dynamicAnalysis.status === 'completed';
         const hasApkFile = app.apkFilePath && app.apkFileName;
         const appType = app.appType || 'system';
+        
+        // Check if app has high detection (>30 detected engines)
+        const detectedEngines = app.virusTotalAnalysis?.detectedEngines || 
+                               app.detectedEngines || 
+                               (app.virusTotalAnalysis?.maliciousCount || 0) + (app.virusTotalAnalysis?.suspiciousCount || 0) || 0;
+        const isHighDetection = detectedEngines > 30;
 
         let scoreClass = "score-medium";
         if (hasMobsfAnalysis) {
@@ -2212,23 +2460,30 @@ router.get("/apps", requireWebAuth, async (req, res) => {
         }
         
         html += `
-          <tr data-app-type="${appType}">
-            <td>
+          <tr data-app-type="${appType}" data-device-id="${escapeHtmlAttr(app.device_id || '')}" class="${isHighDetection ? 'high-detection' : ''}">
+            <td class="app-package-cell">
               <div class="app-name">${app.appName || "Unknown App"}</div>
-              <div class="file-info">Uploaded: ${uploadDate}</div>
-            </td>
-            <td>
               <div class="package-name">${app.packageName}</div>
-              ${permissionCount > 0 ? `<div class="permissions">${permissionCount} perms</div>` : ""}
+              <div class="app-package-meta">
+                <div class="meta-line"><strong>Uploaded</strong><span>${uploadDate}</span></div>
+                ${app.device_id ? `<div class="meta-line"><strong>Device</strong><span class="meta-value-device">${escapeHtmlAttr(app.device_id)}</span></div>` : ''}
+                ${permissionCount > 0 ? `<div class="meta-line"><strong>Perms</strong><span>${permissionCount}</span></div>` : ""}
+              </div>
             </td>
             <td>
               <div class="file-info">${fileInfo}</div>
-              <div class="file-info">${app.sizeMB?.toFixed(1) || 0}MB</div>
+              <div class="file-info">${app.sizeMB?.toFixed(1) || 0} MB</div>
+              ${app.uploadId ? `<div class="upload-ref">ID: ${escapeHtmlAttr(app.uploadId)}</div>` : ''}
             </td>
             <td>
               <span class="status ${app.status || "unknown"}">
                 ${app.status || "unknown"}
               </span>
+              ${isHighDetection ? `
+                <div style="margin-top: 6px; padding: 5px 8px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 5px; color: #ef4444; font-weight: 700; font-size: 11px;">
+                  🚨 DETECTED: ${detectedEngines} Engines
+                </div>
+              ` : ''}
               ${hasMobsfAnalysis ? `
                 <div class="mobsf-info" style="margin-top: 4px;">
                   <span class="security-score" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8;">Score: ${app.mobsfAnalysis.security_score}/100</span>
@@ -2245,6 +2500,11 @@ router.get("/apps", requireWebAuth, async (req, res) => {
                 <div class="vt-info" style="font-size: 10px;">
                   M:${app.virusTotalAnalysis.maliciousCount} | S:${app.virusTotalAnalysis.suspiciousCount}
                 </div>
+                ${isHighDetection ? `
+                  <div style="margin-top: 4px; padding: 4px 6px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.5); border-radius: 4px; color: #ef4444; font-weight: 600; font-size: 10px;">
+                    📊 Total Detected: ${detectedEngines}
+                  </div>
+                ` : ''}
               ` : ""}
               ${app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe' ? `
                 <div class="ml-info" style="margin-top: 4px; padding: 3px; background: rgba(99, 102, 241, 0.1); border-radius: 2px; border-left: 2px solid #6366f1;">
@@ -2255,43 +2515,43 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             <td class="actions">
               <div class="analysis-columns">
                 <!-- Static Analysis Column -->
-                <div class="analysis-col">
+                <div class="analysis-col static-col">
                   <div class="col-title">Static Analysis</div>
                   <button class="btn-mobsf" onclick="runMobsfAnalysis('${app.sha256}', '${app.packageName}')" title="Run MobSF Static Analysis">
                     ${hasMobsfAnalysis ? "Re-analyze" : "Do Static"} Analysis
                   </button>
                   ${hasMobsfAnalysis ? `
                     <button class="btn-report" onclick="downloadMobsfReport('${app.sha256}')" title="Download MobSF PDF Report">
-                      📄 Download PDF
+                      Download Report
                     </button>
                   ` : ""}
                 </div>
 
                 <!-- Dynamic Analysis Column -->
-                <div class="analysis-col">
+                <div class="analysis-col dynamic-col">
                   <div class="col-title">Dynamic Analysis</div>
                   <button class="btn-dynamic" onclick="runDynamicAnalysis('${app.sha256}', '${app.packageName}', this)" title="Do Dynamic Analysis">
                     ${hasDynamicAnalysis ? 'Re-run Dynamic Analysis' : 'Do Dynamic Analysis'}
                   </button>
                   ${hasDynamicAnalysis ? `
                     <button class="btn-report" onclick="downloadDynamicReport('${app.sha256}')" title="Download Dynamic Analysis PDF">
-                      📄 Download PDF
+                      Download Report
                     </button>
                     <button class="btn-view" onclick="viewDynamicResults('${app.sha256}')" title="View Dynamic Analysis Results">
-                      👁️ View Results
+                      View Results
                     </button>
                   ` : ''}
                 </div>
 
                 <!-- Multi-Engine Analysis Column -->
-                <div class="analysis-col">
-                  <div class="col-title">Multi-Engine Analysis</div>
+                <div class="analysis-col vt-col">
+                  <div class="col-title">Multi-Engine Scan</div>
                   <button class="btn-vt" onclick="runVirusTotalAnalysis('${app.sha256}', '${app.packageName}')" title="Run VirusTotal Analysis">
-                    Multi-Engine Analysis
+                    Multi-Engine Scan
                   </button>
                   ${hasVirusTotalAnalysis ? `
                     <button class="btn-view" onclick="viewVirusTotalResults('${app.sha256}', '${app.packageName}')" title="View VirusTotal Results">
-                      👁️ View Results
+                      View Results
                     </button>
                   ` : ""}
                 </div>
@@ -2300,15 +2560,15 @@ router.get("/apps", requireWebAuth, async (req, res) => {
               <!-- Bottom Action Buttons -->
               <div class="bottom-actions">
                 <button class="btn-analysis" onclick="window.location.href = getBasePath() + '/results/${app.sha256}'" title="View All Analysis Results">
-                  📊 Results
+                  Results
                 </button>
                 ${app.apkFileName ? `
                   <button class="btn-download" onclick="downloadFile('${app.apkFileName}')">
-                    📥 Download APK
+                    Download APK
                   </button>
                 ` : ""}
-                <button class="btn-delete-action" onclick="deleteApp('${app.sha256}', '${app.packageName}')" title="Delete App">
-                  🗑️ Delete
+                <button class="btn-delete-action" onclick="deleteApp('${app.sha256}', '${app.packageName}')" title="Delete App" aria-label="Delete App">
+                  <i class="fas fa-trash-alt"></i>
                 </button>
               </div>
             </td>
@@ -2378,33 +2638,38 @@ router.get("/apps", requireWebAuth, async (req, res) => {
           }
           
           function performSearch() {
-            const query = document.getElementById('search-input').value.toLowerCase();
-            const rows = document.querySelectorAll('table tbody tr');
-            rows.forEach(row => {
-              const appName = row.querySelector('.app-name').textContent.toLowerCase();
-              const packageName = row.querySelector('.package-name').textContent.toLowerCase();
-              const fileName = row.querySelector('td:nth-child(3) .file-info').textContent.toLowerCase();
-              if (appName.includes(query) || packageName.includes(query) || fileName.includes(query)) {
-                row.style.display = '';
-              } else {
-                row.style.display = 'none';
-              }
-            });
+            applyCombinedFilters();
           }
           
           function filterAppsByType() {
+            applyCombinedFilters();
+          }
+
+          function applyCombinedFilters() {
+            const query = (document.getElementById('search-input').value || '').toLowerCase();
             const selectedType = document.getElementById('appTypeFilter').value;
+            const selectedDevice = document.getElementById('deviceIdFilter').value;
             const rows = document.querySelectorAll('table tbody tr');
-            
             rows.forEach(row => {
               const appType = row.getAttribute('data-app-type');
-              if (selectedType === 'all' || appType === selectedType) {
-                row.style.display = '';
-              } else {
-                row.style.display = 'none';
-              }
+              const deviceId = row.getAttribute('data-device-id') || '';
+              const appNameEl = row.querySelector('.app-name');
+              const pkgNameEl = row.querySelector('.package-name');
+              const fileInfoEl = row.querySelector('td:nth-child(2) .file-info');
+              const appName = appNameEl ? appNameEl.textContent.toLowerCase() : '';
+              const pkgName = pkgNameEl ? pkgNameEl.textContent.toLowerCase() : '';
+              const fileName = fileInfoEl ? fileInfoEl.textContent.toLowerCase() : '';
+
+              const typeMatch = selectedType === 'all' || appType === selectedType;
+              const deviceMatch = selectedDevice === 'all' || deviceId === selectedDevice;
+              const searchMatch = !query || appName.includes(query) || pkgName.includes(query) || fileName.includes(query);
+
+              row.style.display = (typeMatch && deviceMatch && searchMatch) ? '' : 'none';
             });
           }
+
+          // Apply filters on page load
+          applyCombinedFilters();
 
           function clearTodayData() {
             if (confirm('Are you sure you want to delete all data from today\\'s index? This action cannot be undone.')) {
@@ -3413,7 +3678,7 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
     th{background:#070d1a;color:#94a3b8;padding:9px 10px;text-align:left;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #1e293b}
     td{padding:8px 10px;border-bottom:1px solid #0d1a2e;vertical-align:top;word-break:break-word}
     tr:last-child td{border-bottom:none}
-    tr:hover td{background:rgba(30,58,100,.25)}
+    tr:hover td{background:rgba(61,90,138,.8)}
     /* Badges */
     .badge{display:inline-block;padding:3px 8px;border-radius:5px;font-size:11px;font-weight:600}
     .badge-red{background:#450a0a;color:#fca5a5;border:1px solid #7f1d1d}
@@ -3426,7 +3691,7 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
     .tls-row:last-child{border-bottom:none}
     .tls-status{width:80px;flex-shrink:0;text-align:center}
     .tls-name{font-size:13px;color:#e2e8f0;font-weight:500}
-    .tls-desc{font-size:11px;color:#475569;margin-top:3px}
+    .tls-desc{font-size:11px;color: #94a3b8;margin-top:3px}
     /* URL / email chips */
     .chip-list{display:flex;flex-wrap:wrap;gap:6px}
     .chip{background:#0d1a2e;border:1px solid #1e293b;color:#94a3b8;padding:4px 10px;border-radius:6px;font-size:11px;word-break:break-all}
@@ -3438,7 +3703,7 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
     details summary:hover{color:#94a3b8}
     details[open] summary{margin-bottom:8px}
     /* Empty state */
-    .empty{color:#334155;font-size:12px;padding:10px 0;font-style:italic}
+    .empty{color: #64748b;font-size:12px;padding:10px 0;font-style:italic}
     /* Screenshot grid */
     .ss-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
     .ss-item{background:#070d1a;border:1px solid #1e293b;border-radius:8px;overflow:hidden;text-align:center}
@@ -3528,7 +3793,7 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
           <td style="font-family:monospace;font-size:11px">${esc(ip)}</td>
           <td>${esc(country)}</td>
           <td>${esc(cityRegion)}</td>
-          <td style="font-size:11px;color:#475569">${esc(coords)}</td>
+          <td style="font-size:11px;color: #94a3b8">${esc(coords)}</td>
         </tr>`;
       }).join('')}
     </table></div>
@@ -3658,7 +3923,7 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
     <div class="tbl-wrap"><table>
       <tr><th>#</th><th>File Path</th></tr>
       ${otherFiles.slice(0,100).map((f, i) => `<tr><td style="color:#64748b">${i+1}</td><td style="font-family:monospace;font-size:11px">${esc(typeof f === 'string' ? f : JSON.stringify(f))}</td></tr>`).join('')}
-      ${otherFiles.length > 100 ? `<tr><td colspan="2" style="color:#475569">… and ${otherFiles.length - 100} more</td></tr>` : ''}
+      ${otherFiles.length > 100 ? `<tr><td colspan="2" style="color: #94a3b8">… and ${otherFiles.length - 100} more</td></tr>` : ''}
     </table></div>
   </div>` : ''}
 
@@ -3676,7 +3941,7 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
           <td><span class="badge badge-blue">${esc(c.method || '—')}</span></td>
           <td style="font-family:monospace;font-size:10px;color:#a5b4fc">${esc(c.class || '—')}</td>
           <td style="font-size:11px">${args}</td>
-          <td style="font-size:10px;color:#475569">${esc((c.calledFrom || '').split('(')[0])}</td>
+          <td style="font-size:10px;color: #94a3b8">${esc((c.calledFrom || '').split('(')[0])}</td>
         </tr>`;
       }).join('')}
     </table></div>

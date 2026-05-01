@@ -32,6 +32,14 @@ const getIndexName = () => {
   return `mobile_apps_${day}-${month}-${year}`;
 };
 
+// Generate a unique ID for each upload event from frontend clients.
+const generateUploadId = () => {
+  if (typeof crypto.randomUUID === "function") {
+    return `upl_${Date.now()}_${crypto.randomUUID()}`;
+  }
+  return `upl_${Date.now()}_${crypto.randomBytes(12).toString("hex")}`;
+};
+
 const isHashMalicious = (hash) => knownHashes.includes(hash);
 
 // Calculate SHA-256 hash of a file
@@ -173,6 +181,7 @@ const uploadApp = async (req, res) => {
     fs.renameSync(apkFile.path, newFilePath);
     console.log(`Renamed file to: ${newFilePath}`);
 
+    const uploadId = generateUploadId();
     let status = "unknown";
     let source = "Unknown";
 
@@ -196,6 +205,7 @@ const uploadApp = async (req, res) => {
         id: docId,
         body: {
           doc: {
+            uploadId,
             uploadedByUser: true,
             timestamp: new Date(),
             apkFilePath: newFilePath,
@@ -220,6 +230,7 @@ const uploadApp = async (req, res) => {
       const dangerousPermissions = separateDangerousPermissions(app.permissions || []);
 
       const docData = {
+        uploadId,
         appName: app.appName || safePackageName,
         packageName: safePackageName,
         sha256: uploadedFileHash,
@@ -381,6 +392,7 @@ const uploadApp = async (req, res) => {
       message: "APK uploaded successfully",
       app: {
         id: docId,
+        uploadId,
         packageName: safePackageName,
         appName: app.appName || safePackageName,
         status: status,
