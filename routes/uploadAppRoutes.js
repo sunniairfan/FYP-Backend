@@ -4,7 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const mobsf = require("../utils/mobsf");
 const { analyzeFileWithVirusTotal, checkVirusTotal } = require("../utils/virusTotal");
-const { createHighMalwareNotification } = require("../utils/notifications");
+const { createNotification } = require("../utils/notifications");
 const { calculateWeightedRiskScore } = require("../utils/riskAlgorithm");
 const router = express.Router();
 
@@ -319,7 +319,7 @@ async function analyzeAppWithVirusTotal(sha256, esClient) {
       },
     });
 
-    createHighMalwareNotification(esClient, {
+    createNotification(esClient, {
       appName: appData.appName,
       packageName: appData.packageName,
       sha256: appData.sha256,
@@ -480,6 +480,370 @@ router.get("/report/:sha256", requireWebAuth, async (req, res) => {
 router.get("/mobsf/status", requireWebAuth, async (req, res) => {
   const connected = await mobsf.checkConnection();
   res.json({ mobsf_connected: connected });
+});
+
+// GET /static-results/:sha256 - View MobSF static analysis results page
+router.get("/static-results/:sha256", requireWebAuth, async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const sha256 = req.params.sha256;
+
+  try {
+    const selectedDate = req.query.date || new Date().toISOString().split("T")[0];
+    const indexName = getIndexNameForDate(selectedDate);
+
+    const searchRes = await esClient.search({
+      index: indexName, size: 1,
+      query: { term: { sha256: { value: sha256 } } },
+    });
+
+    if (searchRes.hits.hits.length === 0) {
+      return res.status(404).send('<html><body style="background:#05090f;color:white;font-family:Arial;text-align:center;padding:50px"><h1>App not found</h1><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
+    }
+
+    const appData = searchRes.hits.hits[0]._source;
+    const ms = appData.mobsfAnalysis;
+    if (!ms) {
+      return res.status(400).send('<html><body style="background:#05090f;color:white;font-family:Arial;text-align:center;padding:50px"><h1>⚠️ No static analysis available</h1><p style="color:#94a3b8">Run Static Analysis first.</p><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
+    }
+
+    const md5Hash = appData.mobsfHash || null;
+    const MOBSF = process.env.MOBSF_URL || 'http://localhost:8000';
+
+    // Fetch full JSON report live from MobSF
+    let report = {};
+    if (md5Hash) {
+      try { report = await mobsf.getJsonReport(md5Hash); } catch (_) { report = {}; }
+    }
+
+    const esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+    // ── Score & verdict ────────────────────────────────────────────────────────
+    const secScore  = ms.security_score ?? report.appsec?.security_score ?? 0;
+    const scoreColor = secScore >= 70 ? '#22c55e' : secScore >= 40 ? '#f59e0b' : '#ef4444';
+    const scoreBg   = secScore >= 70 ? '#052e16'  : secScore >= 40 ? '#451a03'  : '#450a0a';
+    const scoreLabel = secScore >= 70 ? '🟢 SECURE' : secScore >= 40 ? '🟡 MODERATE RISK' : '🔴 HIGH RISK';
+
+    // ── Permissions ────────────────────────────────────────────────────────────
+    const permsObj = report.permissions || {};
+    const allPerms = Object.entries(permsObj);
+    const dangerousPerms = allPerms.filter(([,v]) => v?.status === 'dangerous');
+    const normalPerms    = allPerms.filter(([,v]) => v?.status !== 'dangerous');
+
+    // ── Code analysis findings ─────────────────────────────────────────────────
+    const codeObj = report.code_analysis || {};
+    const codeFindings = Object.entries(codeObj).map(([id, f]) => ({
+      id,
+      title:    f?.metadata?.cwe || f?.metadata?.owasp || id,
+      desc:     f?.metadata?.description || f?.description || '',
+      severity: (f?.metadata?.severity || f?.severity || 'info').toLowerCase(),
+      ref:      f?.metadata?.ref || '',
+      files:    Array.isArray(f?.files) ? f.files : []
+    }));
+    const highFindings = codeFindings.filter(f => f.severity === 'high');
+    const warnFindings = codeFindings.filter(f => f.severity === 'warning' || f.severity === 'medium');
+    const infoFindings = codeFindings.filter(f => f.severity === 'info' || f.severity === 'low');
+
+    // ── Manifest analysis ──────────────────────────────────────────────────────
+    const manifestArr = Array.isArray(report.manifest_analysis) ? report.manifest_analysis : [];
+
+    // ── Network security ───────────────────────────────────────────────────────
+    const netArr = Array.isArray(report.network_security) ? report.network_security : [];
+
+    // ── App metadata ───────────────────────────────────────────────────────────
+    const appName   = esc(appData.appName || report.app_name || 'Unknown');
+    const pkgName   = esc(appData.packageName || report.package_name || sha256);
+    const verName   = esc(report.version_name || 'N/A');
+    const verCode   = esc(report.version_code || 'N/A');
+    const minSdk    = esc(report.min_sdk  || 'N/A');
+    const targSdk   = esc(report.target_sdk || 'N/A');
+    const fileSize  = appData.sizeMB ? `${Number(appData.sizeMB).toFixed(2)} MB` : (report.size || 'N/A');
+    const scanDate  = appData.lastMobsfAnalysis ? new Date(appData.lastMobsfAnalysis).toLocaleString() : 'N/A';
+
+    // ── Severity badge helper ──────────────────────────────────────────────────
+    const sevBadge = (sev) => {
+      const s = (sev||'').toLowerCase();
+      if (s === 'high')   return `<span style="background:#450a0a;color:#fca5a5;border:1px solid #7f1d1d;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700">HIGH</span>`;
+      if (s === 'warning' || s === 'medium') return `<span style="background:#451a03;color:#fcd34d;border:1px solid #92400e;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700">WARN</span>`;
+      return `<span style="background:#1e293b;color:#94a3b8;border:1px solid #334155;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700">INFO</span>`;
+    };
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Static Analysis — ${appName}</title>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{background:#05090f;color:#cbd5e1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;padding:20px 16px}
+    a{color:#3b82f6;text-decoration:none}a:hover{text-decoration:underline}
+    .wrap{max-width:1100px;margin:0 auto}
+    .topbar{display:flex;align-items:center;gap:12px;margin-bottom:22px;flex-wrap:wrap}
+    .back-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;background:#1e293b;border:1px solid #334155;color:#94a3b8;border-radius:8px;font-size:13px;font-weight:500;transition:background .2s}
+    .back-btn:hover{background:#263248;color:#e2e8f0;text-decoration:none}
+    .page-title{font-size:20px;font-weight:700;color:#f1f5f9}
+    .page-sub{font-size:12px;color:#64748b;margin-top:3px}
+    .section{background:#0b1120;border:1px solid #1a2332;border-radius:12px;padding:18px 20px;margin-bottom:14px;overflow:hidden}
+    .sec-hdr{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid #1a2332}
+    .sec-icon{font-size:18px;width:32px;height:32px;background:#0f2040;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+    .sec-title{font-size:13px;font-weight:600;color:#e2e8f0;text-transform:uppercase;letter-spacing:.05em}
+    .sec-count{margin-left:auto;background:#1e293b;color:#94a3b8;font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px}
+    /* Score */
+    .score-banner{border-radius:12px;padding:22px 28px;margin-bottom:14px;display:flex;align-items:center;gap:28px;flex-wrap:wrap}
+    .score-num{font-size:64px;font-weight:800;line-height:1}
+    .score-denom{font-size:22px;color:#64748b;margin-left:4px}
+    .score-label{font-size:20px;font-weight:700;letter-spacing:.04em;margin-top:4px}
+    .score-desc{font-size:13px;line-height:1.6;flex:1;min-width:200px}
+    /* Stats grid */
+    .stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+    .stat-card{background:#05090f;border:1px solid #1a2332;border-radius:10px;padding:14px;text-align:center}
+    .stat-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
+    .stat-val{font-size:26px;font-weight:700;line-height:1}
+    /* Meta info */
+    .info-row{display:flex;justify-content:space-between;align-items:flex-start;padding:7px 0;border-bottom:1px solid #0d1a2e;gap:12px;flex-wrap:wrap}
+    .info-row:last-child{border-bottom:none}
+    .info-lbl{font-size:11px;color:#64748b;font-weight:500;min-width:130px;flex-shrink:0}
+    .info-val{font-size:11px;color:#cbd5e1;word-break:break-all;text-align:right;font-family:monospace}
+    /* Tables */
+    .tbl-wrap{overflow-x:auto}
+    table{width:100%;border-collapse:collapse;font-size:12px}
+    th{background:#070d1a;color:#94a3b8;padding:9px 10px;text-align:left;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #1e293b}
+    td{padding:8px 10px;border-bottom:1px solid #0d1a2e;vertical-align:top;word-break:break-word}
+    tr:last-child td{border-bottom:none}
+    tr:hover td{background:rgba(61,90,138,.08)}
+    /* Permission pill */
+    .perm-list{display:flex;flex-wrap:wrap;gap:6px}
+    .perm{padding:4px 10px;border-radius:6px;font-size:11px;font-family:monospace;word-break:break-all}
+    .perm-danger{background:#450a0a;color:#fca5a5;border:1px solid #7f1d1d}
+    .perm-normal{background:#1e293b;color:#94a3b8;border:1px solid #334155}
+    /* Finding rows */
+    .finding{background:#070d1a;border:1px solid #1e293b;border-radius:8px;padding:11px 14px;margin-bottom:8px}
+    .finding-title{font-size:12px;font-weight:600;color:#e2e8f0;margin-bottom:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .finding-desc{font-size:11px;color:#94a3b8;line-height:1.5}
+    .finding-files{font-size:10px;color:#64748b;margin-top:5px;font-family:monospace}
+    /* Collapsible */
+    details summary{cursor:pointer;font-size:12px;color:#64748b;user-select:none;padding:4px 0;margin-top:8px}
+    details summary:hover{color:#94a3b8}
+    details[open] summary{margin-bottom:8px}
+    .empty{color:#64748b;font-size:12px;font-style:italic;padding:6px 0}
+    /* Action buttons */
+    .action-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px}
+    .dl-btn{display:inline-flex;align-items:center;gap:7px;padding:10px 22px;background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#fff;border-radius:9px;font-size:13px;font-weight:600;transition:opacity .2s}
+    .dl-btn:hover{opacity:.88;text-decoration:none}
+    .ext-btn{display:inline-flex;align-items:center;gap:7px;padding:10px 22px;background:#0f2040;border:1px solid #1d4ed8;color:#60a5fa;border-radius:9px;font-size:13px;font-weight:600;transition:background .2s}
+    .ext-btn:hover{background:#1e3a5f;text-decoration:none}
+    @media(max-width:600px){.stats-grid{grid-template-columns:repeat(2,1fr)}.score-banner{flex-direction:column}}
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Top bar -->
+  <div class="topbar">
+    <a class="back-btn" href="/uploadapp/apps?date=${selectedDate}">← Back to Apps</a>
+    <div>
+      <div class="page-title">🛡️ Static Analysis Results</div>
+      <div class="page-sub">${appName} &nbsp;·&nbsp; ${pkgName} &nbsp;·&nbsp; Scanned: ${scanDate}</div>
+    </div>
+  </div>
+
+  <!-- ── 1. Score Banner ──────────────────────────────────────── -->
+  <div class="score-banner" style="background:${scoreBg};border:1px solid ${scoreColor}33">
+    <div>
+      <div>
+        <span class="score-num" style="color:${scoreColor}">${secScore}</span><span class="score-denom">/100</span>
+      </div>
+      <div class="score-label" style="color:${scoreColor}">${scoreLabel}</div>
+    </div>
+    <div class="score-desc">
+      MobSF security score based on static code analysis. Higher is better.<br>
+      <span style="color:#64748b;font-size:11px">Score ≥70 = Secure &nbsp;·&nbsp; 40–69 = Moderate Risk &nbsp;·&nbsp; &lt;40 = High Risk</span>
+    </div>
+    <div class="action-row">
+      ${md5Hash ? `<a class="dl-btn" href="/uploadapp/report/${sha256}?date=${selectedDate}">📄 Download PDF Report</a>
+      <a class="ext-btn" href="${MOBSF}/static_analyzer/${md5Hash}/" target="_blank" rel="noopener">🔗 View on MobSF</a>` : ''}
+    </div>
+  </div>
+
+  <!-- ── 2. Summary Stats ─────────────────────────────────────── -->
+  <div class="section">
+    <div class="sec-hdr">
+      <div class="sec-icon">📊</div>
+      <div class="sec-title">Summary</div>
+    </div>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="stat-label">Security Score</div><div class="stat-val" style="color:${scoreColor}">${secScore}/100</div></div>
+      <div class="stat-card"><div class="stat-label">High Risk</div><div class="stat-val" style="color:${highFindings.length>0?'#ef4444':'#22c55e'}">${highFindings.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Warnings</div><div class="stat-val" style="color:${warnFindings.length>0?'#f59e0b':'#22c55e'}">${warnFindings.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Info</div><div class="stat-val" style="color:#94a3b8">${infoFindings.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Dangerous Perms</div><div class="stat-val" style="color:${dangerousPerms.length>0?'#ef4444':'#22c55e'}">${dangerousPerms.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Total Perms</div><div class="stat-val" style="color:#3b82f6">${allPerms.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Manifest Issues</div><div class="stat-val" style="color:${manifestArr.length>0?'#f59e0b':'#22c55e'}">${manifestArr.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Network Issues</div><div class="stat-val" style="color:${netArr.length>0?'#f59e0b':'#22c55e'}">${netArr.length}</div></div>
+    </div>
+  </div>
+
+  <!-- ── 3. App Metadata ─────────────────────────────────────── -->
+  <div class="section">
+    <div class="sec-hdr">
+      <div class="sec-icon">📱</div>
+      <div class="sec-title">App Information</div>
+    </div>
+    <div class="info-row"><span class="info-lbl">App Name</span><span class="info-val">${appName}</span></div>
+    <div class="info-row"><span class="info-lbl">Package Name</span><span class="info-val">${pkgName}</span></div>
+    <div class="info-row"><span class="info-lbl">Version</span><span class="info-val">${verName} (code ${verCode})</span></div>
+    <div class="info-row"><span class="info-lbl">Min SDK / Target SDK</span><span class="info-val">${minSdk} / ${targSdk}</span></div>
+    <div class="info-row"><span class="info-lbl">File Size</span><span class="info-val">${fileSize}</span></div>
+    <div class="info-row"><span class="info-lbl">SHA-256</span><span class="info-val" style="font-size:10px">${esc(sha256)}</span></div>
+    ${md5Hash ? `<div class="info-row"><span class="info-lbl">MobSF MD5</span><span class="info-val" style="font-size:10px">${esc(md5Hash)}</span></div>` : ''}
+    <div class="info-row"><span class="info-lbl">Scan Type</span><span class="info-val">${esc(ms.scan_type || 'apk')}</span></div>
+    <div class="info-row"><span class="info-lbl">Last Scanned</span><span class="info-val">${scanDate}</span></div>
+  </div>
+
+  <!-- ── 4. Dangerous Permissions ───────────────────────────── -->
+  <div class="section">
+    <div class="sec-hdr">
+      <div class="sec-icon">🚫</div>
+      <div class="sec-title">Dangerous Permissions</div>
+      <div class="sec-count">${dangerousPerms.length}</div>
+    </div>
+    ${dangerousPerms.length === 0
+      ? '<p class="empty">No dangerous permissions found.</p>'
+      : `<div class="perm-list">${dangerousPerms.map(([name, v]) =>
+          `<span class="perm perm-danger" title="${esc(v?.description || '')}">${esc(name)}</span>`
+        ).join('')}</div>
+        <details style="margin-top:12px">
+          <summary>Show permission details (${dangerousPerms.length})</summary>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Permission</th><th>Status</th><th>Description</th></tr></thead>
+            <tbody>${dangerousPerms.map(([name, v]) => `<tr>
+              <td style="font-family:monospace;font-size:11px;color:#fca5a5">${esc(name)}</td>
+              <td><span style="background:#450a0a;color:#fca5a5;border:1px solid #7f1d1d;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700">DANGEROUS</span></td>
+              <td style="color:#94a3b8">${esc(v?.description || v?.info || '')}</td>
+            </tr>`).join('')}</tbody>
+          </table></div>
+        </details>`
+    }
+    ${normalPerms.length > 0 ? `
+    <details style="margin-top:12px">
+      <summary>Show normal permissions (${normalPerms.length})</summary>
+      <div class="perm-list" style="margin-top:8px">${normalPerms.map(([name]) =>
+        `<span class="perm perm-normal">${esc(name)}</span>`
+      ).join('')}</div>
+    </details>` : ''}
+  </div>
+
+  <!-- ── 5. Code Analysis Findings ─────────────────────────── -->
+  <div class="section">
+    <div class="sec-hdr">
+      <div class="sec-icon">🔍</div>
+      <div class="sec-title">Code Analysis</div>
+      <div class="sec-count">${codeFindings.length} findings</div>
+    </div>
+    ${codeFindings.length === 0
+      ? '<p class="empty">No code analysis findings.</p>'
+      : `${highFindings.length > 0 ? `
+        <div style="margin-bottom:12px">
+          <div style="font-size:11px;font-weight:600;color:#ef4444;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">🔴 High Severity (${highFindings.length})</div>
+          ${highFindings.map(f => `
+            <div class="finding" style="border-color:#7f1d1d">
+              <div class="finding-title">${sevBadge(f.severity)} ${esc(f.title)}</div>
+              <div class="finding-desc">${esc(f.desc)}</div>
+              ${f.files.length > 0 ? `<div class="finding-files">📁 ${f.files.slice(0,3).map(x => esc(typeof x === 'object' ? x.file_path || JSON.stringify(x) : x)).join(' &nbsp;·&nbsp; ')}${f.files.length > 3 ? ` +${f.files.length - 3} more` : ''}</div>` : ''}
+            </div>`).join('')}
+        </div>` : ''}
+        ${warnFindings.length > 0 ? `
+        <details ${highFindings.length === 0 ? 'open' : ''}>
+          <summary>🟡 Warnings (${warnFindings.length})</summary>
+          ${warnFindings.map(f => `
+            <div class="finding">
+              <div class="finding-title">${sevBadge(f.severity)} ${esc(f.title)}</div>
+              <div class="finding-desc">${esc(f.desc)}</div>
+              ${f.files.length > 0 ? `<div class="finding-files">📁 ${f.files.slice(0,3).map(x => esc(typeof x === 'object' ? x.file_path || JSON.stringify(x) : x)).join(' &nbsp;·&nbsp; ')}${f.files.length > 3 ? ` +${f.files.length - 3} more` : ''}</div>` : ''}
+            </div>`).join('')}
+        </details>` : ''}
+        ${infoFindings.length > 0 ? `
+        <details>
+          <summary>ℹ️ Informational (${infoFindings.length})</summary>
+          ${infoFindings.map(f => `
+            <div class="finding">
+              <div class="finding-title">${sevBadge(f.severity)} ${esc(f.title)}</div>
+              <div class="finding-desc">${esc(f.desc)}</div>
+            </div>`).join('')}
+        </details>` : ''}`
+    }
+  </div>
+
+  <!-- ── 6. Manifest Analysis ───────────────────────────────── -->
+  ${manifestArr.length > 0 ? `
+  <div class="section">
+    <div class="sec-hdr">
+      <div class="sec-icon">📋</div>
+      <div class="sec-title">Manifest Analysis</div>
+      <div class="sec-count">${manifestArr.length}</div>
+    </div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Issue</th><th>Severity</th><th>Description</th></tr></thead>
+      <tbody>${manifestArr.map(m => {
+        const sev = (m?.severity || m?.stat || 'info').toLowerCase();
+        const title = m?.title || m?.rule || m?.name || 'Manifest Issue';
+        const desc  = m?.description || m?.desc || '';
+        return `<tr>
+          <td style="font-weight:500;color:#e2e8f0">${esc(title)}</td>
+          <td>${sevBadge(sev)}</td>
+          <td style="color:#94a3b8">${esc(desc)}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>
+  </div>` : ''}
+
+  <!-- ── 7. Network Security ────────────────────────────────── -->
+  ${netArr.length > 0 ? `
+  <div class="section">
+    <div class="sec-hdr">
+      <div class="sec-icon">🌐</div>
+      <div class="sec-title">Network Security</div>
+      <div class="sec-count">${netArr.length}</div>
+    </div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Issue</th><th>Severity</th><th>Description</th></tr></thead>
+      <tbody>${netArr.map(n => {
+        const sev = (n?.severity || n?.stat || 'info').toLowerCase();
+        const title = n?.title || n?.name || 'Network Issue';
+        const desc  = n?.description || n?.desc || '';
+        return `<tr>
+          <td style="font-weight:500;color:#e2e8f0">${esc(title)}</td>
+          <td>${sevBadge(sev)}</td>
+          <td style="color:#94a3b8">${esc(desc)}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>
+  </div>` : ''}
+
+  <!-- ── 8. Full Report Actions ─────────────────────────────── -->
+  <div class="section">
+    <div class="sec-hdr">
+      <div class="sec-icon">📁</div>
+      <div class="sec-title">Full Report</div>
+    </div>
+    <div class="action-row">
+      ${md5Hash
+        ? `<a class="dl-btn" href="/uploadapp/report/${sha256}?date=${selectedDate}">📄 Download PDF Report</a>
+           <a class="ext-btn" href="${MOBSF}/static_analyzer/${md5Hash}/" target="_blank" rel="noopener">🔗 Open Full Report on MobSF</a>`
+        : '<p class="empty">MobSF hash not available. Re-run static analysis to generate the report.</p>'
+      }
+    </div>
+  </div>
+
+</div>
+</body>
+</html>`;
+
+    res.send(html);
+  } catch (err) {
+    console.error('[Static Results] Error:', err.message);
+    res.status(500).send('<html><body style="background:#05090f;color:white;font-family:Arial;text-align:center;padding:50px"><h1>Error loading results</h1><p style="color:#94a3b8">' + err.message + '</p><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
+  }
 });
 
 // GET /virustotal-results/:sha256 - View VirusTotal analysis results - REQUIRES WEB AUTH
@@ -1135,54 +1499,6 @@ router.get("/results/:sha256", requireWebAuth, async (req, res) => {
       </div>
     </div>
 
-    <!-- RUN ALGORITHM SECTION -->
-    <div class="analysis-section" style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%); border-left: 4px solid #6366f1;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-        <div class="section-title" style="margin: 0;"><span class="icon">⚙️</span> Weighted Risk Algorithm</div>
-        <button id="runAlgorithmBtn" onclick="runAlgorithm('${sha256}')" style="padding: 10px 20px; background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s;">
-          ▶️ Run Algorithm
-        </button>
-      </div>
-      <div id="algorithmResults" style="display: none;">
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px;">
-          <div class="metric">
-            <div class="metric-label">Final Score</div>
-            <div class="metric-value" id="finalScore" style="color: #6366f1;">--</div>
-          </div>
-          <div class="metric">
-            <div class="metric-label">Final Status</div>
-            <div class="metric-value" id="finalStatus" style="color: #6366f1;">--</div>
-          </div>
-          <div class="metric">
-            <div class="metric-label">Confidence</div>
-            <div class="metric-value" id="confidence" style="color: #6366f1;">--</div>
-          </div>
-          <div class="metric">
-            <div class="metric-label">Data Sources</div>
-            <div class="metric-value" id="dataSources" style="color: #6366f1;">--</div>
-          </div>
-        </div>
-
-        <div style="background: rgba(10, 25, 47, 0.5); border: 1px solid #1e293b; border-radius: 8px; padding: 15px; margin-bottom: 15px;">
-          <div style="font-weight: 600; color: #e2e8f0; margin-bottom: 12px;">Score Breakdown:</div>
-          <div id="breakdownTable" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
-            <!-- Breakdown will be populated here -->
-          </div>
-        </div>
-
-        <div style="background: rgba(10, 25, 47, 0.5); border: 1px solid #1e293b; border-radius: 8px; padding: 15px;">
-          <div style="font-weight: 600; color: #e2e8f0; margin-bottom: 12px;">Weights Used:</div>
-          <div id="weightsTable" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
-            <!-- Weights will be populated here -->
-          </div>
-        </div>
-      </div>
-      <div id="algorithmLoading" style="display: none; text-align: center; padding: 20px;">
-        <div style="font-size: 24px; margin-bottom: 10px;">⏳</div>
-        <div style="color: #94a3b8;">Calculating weighted risk score...</div>
-      </div>
-    </div>
-
     <!-- 1. ML MODEL PREDICTION -->
     <div class="analysis-section ml">
       <div class="section-title"><span class="icon">🤖</span> ML Model Prediction</div>
@@ -1253,6 +1569,57 @@ router.get("/results/:sha256", requireWebAuth, async (req, res) => {
           ` : ''}
         ` : `
           <div class="no-data">No static analysis available yet</div>
+        `}
+        ${app.mobsfAnalysis ? `
+          <div style="margin-top:14px;">
+            <a href="/uploadapp/static-results/${app.sha256}${selectedDate ? '?date=' + selectedDate : ''}"
+               style="display:inline-block;padding:9px 18px;background:#052e16;color:#4ade80;border:1px solid #16a34a;border-radius:7px;font-size:13px;font-weight:600;text-decoration:none;">
+              🔍 View Full Static Results
+            </a>
+          </div>
+        ` : ''}
+      </div>
+    </div>
+
+    <!-- 3. Dynamic Analysis -->
+    <div class="analysis-section" style="border-left: 4px solid #f59e0b;">
+      <div class="section-title" style="color: #f59e0b;"><span class="icon">⚡</span> Dynamic Analysis</div>
+      <div class="section-content">
+        ${app.dynamicAnalysis ? `
+          <div class="metrics-grid">
+            <div class="metric">
+              <div class="metric-label">Status</div>
+              <div class="metric-value" style="color: ${app.dynamicAnalysis.status === 'completed' ? '#10b981' : '#f59e0b'};">
+                ${(app.dynamicAnalysis.status || 'unknown').toUpperCase()}
+              </div>
+            </div>
+            ${app.dynamicAnalysis.network_calls !== undefined ? `
+              <div class="metric">
+                <div class="metric-label">Network Calls</div>
+                <div class="metric-value" style="color: #f59e0b;">${app.dynamicAnalysis.network_calls}</div>
+              </div>
+            ` : ''}
+            ${app.dynamicAnalysis.activities_started !== undefined ? `
+              <div class="metric">
+                <div class="metric-label">Activities Started</div>
+                <div class="metric-value">${app.dynamicAnalysis.activities_started}</div>
+              </div>
+            ` : ''}
+            ${app.lastDynamicAnalysis ? `
+              <div class="metric">
+                <div class="metric-label">Last Scanned</div>
+                <div class="metric-value" style="font-size:14px;">${new Date(app.lastDynamicAnalysis).toLocaleDateString()}</div>
+              </div>
+            ` : ''}
+          </div>
+          <div style="margin-top:14px;">
+            <a href="/uploadapp/dynamic-results/${app.sha256}${selectedDate ? '?date=' + selectedDate : ''}"
+               style="display:inline-block;padding:9px 18px;background:#451a03;color:#fcd34d;border:1px solid #92400e;border-radius:7px;font-size:13px;font-weight:600;text-decoration:none;">
+              ⚡ View Full Dynamic Results
+            </a>
+          </div>
+        ` : `
+          <div class="no-data">No dynamic analysis available yet</div>
         `}
       </div>
     </div>
@@ -2517,12 +2884,15 @@ router.get("/apps", requireWebAuth, async (req, res) => {
                 <!-- Static Analysis Column -->
                 <div class="analysis-col static-col">
                   <div class="col-title">Static Analysis</div>
-                  <button class="btn-mobsf" onclick="runMobsfAnalysis('${app.sha256}', '${app.packageName}')" title="Run MobSF Static Analysis">
+                  <button class="btn-mobsf" onclick="runMobsfAnalysis('${app.sha256}', '${app.packageName}', this)" title="Run MobSF Static Analysis">
                     ${hasMobsfAnalysis ? "Re-analyze" : "Do Static"} Analysis
                   </button>
                   ${hasMobsfAnalysis ? `
                     <button class="btn-report" onclick="downloadMobsfReport('${app.sha256}')" title="Download MobSF PDF Report">
                       Download Report
+                    </button>
+                    <button class="btn-view" onclick="viewStaticResults('${app.sha256}')" title="View Static Analysis Results">
+                      View Results
                     </button>
                   ` : ""}
                 </div>
@@ -2546,7 +2916,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
                 <!-- Multi-Engine Analysis Column -->
                 <div class="analysis-col vt-col">
                   <div class="col-title">Multi-Engine Scan</div>
-                  <button class="btn-vt" onclick="runVirusTotalAnalysis('${app.sha256}', '${app.packageName}')" title="Run VirusTotal Analysis">
+                  <button class="btn-vt" onclick="runVirusTotalAnalysis('${app.sha256}', '${app.packageName}', this)" title="Run VirusTotal Analysis">
                     Multi-Engine Scan
                   </button>
                   ${hasVirusTotalAnalysis ? `
@@ -2689,61 +3059,243 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             }
           }
           
-          function runMobsfAnalysis(sha256, packageName) {
-            if (confirm('Run MobSF static analysis for "' + packageName + '"? This may take several minutes.')) {
-              event.target.textContent = 'Analyzing...';
-              event.target.disabled = true;
-              event.target.className = 'btn-mobsf btn-disabled';
-              
-              fetch(getBasePath() + '/analyze/' + sha256, { method: 'POST' })
-                .then(response => response.json())
-                .then(data => {
-                  if (data.error) {
-                    alert('MobSF Analysis Error: ' + data.error);
-                  } else {
-                    alert('MobSF Static Analysis completed successfully!\\nSecurity Score: ' + 
-                          (data.analysis ? data.analysis.security_score + '/100' : 'N/A'));
-                    location.reload();
-                  }
-                })
-                .catch(error => {
-                  alert('Error: ' + error.message);
-                })
-                .finally(() => {
-                  event.target.textContent = 'Analyze MobSF';
-                  event.target.disabled = false;
-                  event.target.className = 'btn-mobsf';
-                });
+          function runMobsfAnalysis(sha256, packageName, btnEl) {
+            if (!btnEl) btnEl = event?.target || null;
+            const selectedDate = document.getElementById('date-picker').value;
+            const dateParam = selectedDate ? '?date=' + selectedDate : '';
+
+            // Build progress overlay
+            const overlay = document.createElement('div');
+            overlay.id = 'staticOverlay_' + sha256;
+            overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;';
+
+            overlay.innerHTML = \`
+              <div style="background:#112240;border:1px solid #1d4ed8;border-radius:12px;padding:28px 36px;max-width:480px;width:92%;text-align:center;max-height:90vh;overflow-y:auto;">
+                <h2 style="color:#60a5fa;margin:0 0 6px 0;font-size:18px;">🛡️ Static Analysis</h2>
+                <p style="color:#94a3b8;font-size:12px;margin:0 0 16px 0;">\${packageName}</p>
+                <div id="staticSteps_\${sha256}" style="text-align:left;margin-bottom:16px;font-size:12px;">
+                  <div id="staticStep1_\${sha256}" style="color:#94a3b8;padding:3px 0;">⏳ Connecting to MobSF service…</div>
+                  <div id="staticStep2_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Uploading APK to MobSF…</div>
+                  <div id="staticStep3_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Scanning application…</div>
+                  <div id="staticStep4_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Fetching analysis report…</div>
+                  <div id="staticStep5_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Extracting permissions &amp; vulnerabilities…</div>
+                  <div id="staticStep6_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Calculating security score…</div>
+                  <div id="staticStep7_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Saving results to database…</div>
+                </div>
+                <div id="staticResult_\${sha256}" style="display:none;"></div>
+                <div style="width:100%;height:4px;background:#1e293b;border-radius:2px;overflow:hidden;margin-bottom:10px;">
+                  <div id="staticBar_\${sha256}" style="height:100%;width:0%;background:#3b82f6;transition:width 0.5s;"></div>
+                </div>
+                <p style="color:#64748b;font-size:11px;margin:0 0 14px 0;" id="staticTimer_\${sha256}">Elapsed: 0s</p>
+                <button id="staticCancelBtn_\${sha256}" onclick="document.getElementById('staticOverlay_\${sha256}').remove();"
+                  style="background:#ef4444;color:white;border:none;border-radius:6px;padding:8px 20px;cursor:pointer;font-size:12px;">
+                  Close
+                </button>
+              </div>
+            \`;
+            document.body.appendChild(overlay);
+
+            const timerEl = document.getElementById('staticTimer_' + sha256);
+            const barEl   = document.getElementById('staticBar_'   + sha256);
+            const startTs = Date.now();
+            const totalExpected = 90; // ~90s expected
+            const timerInterval = setInterval(() => {
+              const elapsed = Math.round((Date.now() - startTs) / 1000);
+              if (timerEl) timerEl.textContent = 'Elapsed: ' + elapsed + 's';
+              if (barEl)   barEl.style.width = Math.min(95, Math.round((elapsed / totalExpected) * 100)) + '%';
+            }, 1000);
+
+            function markStaticStep(n, status) {
+              const el = document.getElementById('staticStep' + n + '_' + sha256);
+              if (!el) return;
+              if (status === 'done')   { el.style.color = '#10b981'; el.textContent = el.textContent.replace('⬜','✅').replace('⏳','✅'); }
+              else if (status === 'active') { el.style.color = '#f59e0b'; el.textContent = el.textContent.replace('⬜','⏳'); }
+              else if (status === 'error')  { el.style.color = '#ef4444'; el.textContent = el.textContent.replace('⬜','❌').replace('⏳','❌'); }
             }
+
+            // Approximate step timings (cumulative seconds)
+            const stepTimings = [0, 3, 8, 45, 60, 65, 70];
+            stepTimings.forEach((t, i) => {
+              if (i === 0) { markStaticStep(1, 'active'); return; }
+              setTimeout(() => { markStaticStep(i, 'done'); markStaticStep(i + 1, 'active'); }, t * 1000);
+            });
+
+            if (btnEl) { btnEl.disabled = true; btnEl.textContent = '⏳ Analyzing…'; }
+
+            fetch(getBasePath() + '/analyze/' + sha256 + dateParam, { method: 'POST' })
+              .then(r => r.text().then(text => {
+                try { return { ok: r.ok, data: JSON.parse(text) }; }
+                catch (_) { return { ok: false, data: { error: 'Server returned non-JSON (status ' + r.status + ')' } }; }
+              }))
+              .then(({ ok, data }) => {
+                clearInterval(timerInterval);
+                if (barEl) barEl.style.width = '100%';
+                for (let i = 1; i <= 7; i++) markStaticStep(i, data.error ? (i > 3 ? 'error' : 'done') : 'done');
+
+                const resultEl = document.getElementById('staticResult_' + sha256);
+                if (resultEl) resultEl.style.display = 'block';
+
+                if (data.error) {
+                  if (resultEl) resultEl.innerHTML = \`
+                    <div style="background:#7f1d1d;border-radius:6px;padding:12px;color:#fca5a5;font-size:12px;margin-bottom:12px;">
+                      ❌ Static analysis failed:<br><strong>\${data.error}</strong>
+                    </div>\`;
+                } else {
+                  const a = data.analysis || {};
+                  const scoreColor = a.security_score >= 70 ? '#10b981' : a.security_score >= 40 ? '#f59e0b' : '#ef4444';
+                  if (resultEl) resultEl.innerHTML = \`
+                    <div style="background:#052e16;border:1px solid #16a34a;border-radius:6px;padding:12px;color:#4ade80;font-size:12px;margin-bottom:12px;">
+                      ✅ Static analysis completed!
+                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;text-align:left;">
+                        <span style="color:#94a3b8;">🔐 Security Score:</span><span style="color:\${scoreColor};font-weight:700;">\${a.security_score ?? 'N/A'}/100</span>
+                        <span style="color:#94a3b8;">⚠️ High-Risk:</span><span style="color:#e2e8f0;">\${a.high_risk_findings ?? 0} findings</span>
+                        <span style="color:#94a3b8;">🚫 Dangerous Perms:</span><span style="color:#e2e8f0;">\${Array.isArray(a.dangerous_permissions) ? a.dangerous_permissions.length : 0}</span>
+                        <span style="color:#94a3b8;">📦 Scan Type:</span><span style="color:#e2e8f0;">\${a.scan_type || 'apk'}</span>
+                      </div>
+                    </div>
+                    <button onclick="downloadMobsfReport('\${sha256}')"
+                      style="background:#2563eb;color:white;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:12px;margin-bottom:8px;width:100%;">
+                      📄 Download Static Analysis PDF
+                    </button>
+                    <button onclick="viewStaticResults('\${sha256}')"
+                      style="background:#0f2040;color:#60a5fa;border:1px solid #1d4ed8;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:12px;width:100%;">
+                      🔍 View Detailed Static Results
+                    </button>\`;
+                }
+
+                if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Re-analyze'; }
+                const cancelBtn = document.getElementById('staticCancelBtn_' + sha256);
+                if (cancelBtn) {
+                  cancelBtn.textContent = 'Close & Refresh';
+                  cancelBtn.onclick = () => { document.getElementById('staticOverlay_' + sha256)?.remove(); location.reload(); };
+                }
+              })
+              .catch(err => {
+                clearInterval(timerInterval);
+                const resultEl = document.getElementById('staticResult_' + sha256);
+                if (resultEl) { resultEl.style.display = 'block'; resultEl.innerHTML = \`<div style="background:#7f1d1d;border-radius:6px;padding:12px;color:#fca5a5;font-size:12px;margin-bottom:12px;">❌ Network error: \${err.message}</div>\`; }
+                for (let i = 4; i <= 7; i++) markStaticStep(i, 'error');
+                if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Do Static Analysis'; }
+              });
           }
           
-          function runVirusTotalAnalysis(sha256, packageName) {
-            if (confirm('Run VirusTotal analysis for "' + packageName + '"? This may take a few minutes.')) {
-              event.target.textContent = 'Analyzing...';
-              event.target.disabled = true;
-              event.target.className = 'btn-vt btn-disabled';
-              
-              fetch(getBasePath() + '/analyze-vt/' + sha256, { method: 'POST' })
-                .then(response => response.json())
-                .then(data => {
-                  if (data.error) {
-                    alert('VirusTotal Analysis Error: ' + data.error);
-                  } else {
-                    alert('VirusTotal analysis completed successfully!\\nDetection Ratio: ' + 
-                          (data.analysis ? data.analysis.detectionRatio : 'N/A') + 
-                          '\\nStatus: ' + data.app.status);
-                    location.reload();
-                  }
-                })
-                .catch(error => {
-                  alert('Error: ' + error.message);
-                })
-                .finally(() => {
-                  event.target.textContent = 'Analyze VirusTotal';
-                  event.target.disabled = false;
-                  event.target.className = 'btn-vt';
-                });
+          function runVirusTotalAnalysis(sha256, packageName, btnEl) {
+            if (!btnEl) btnEl = event?.target || null;
+            const selectedDate = document.getElementById('date-picker').value;
+            const dateParam = selectedDate ? '?date=' + selectedDate : '';
+
+            // Build progress overlay
+            const overlay = document.createElement('div');
+            overlay.id = 'vtOverlay_' + sha256;
+            overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;';
+
+            overlay.innerHTML = \`
+              <div style="background:#112240;border:1px solid #1d4ed8;border-radius:12px;padding:28px 36px;max-width:480px;width:92%;text-align:center;max-height:90vh;overflow-y:auto;">
+                <h2 style="color:#60a5fa;margin:0 0 6px 0;font-size:18px;">🔬 Multi-Engine Scan</h2>
+                <p style="color:#94a3b8;font-size:12px;margin:0 0 16px 0;">\${packageName}</p>
+                <div id="vtSteps_\${sha256}" style="text-align:left;margin-bottom:16px;font-size:12px;">
+                  <div id="vtStep1_\${sha256}" style="color:#94a3b8;padding:3px 0;">⏳ Looking up app in database…</div>
+                  <div id="vtStep2_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Submitting APK to VirusTotal…</div>
+                  <div id="vtStep3_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Waiting for scan engines to process…</div>
+                  <div id="vtStep4_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Fetching engine results…</div>
+                  <div id="vtStep5_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Calculating detection ratio…</div>
+                  <div id="vtStep6_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Determining threat status…</div>
+                  <div id="vtStep7_\${sha256}" style="color:#64748b;padding:3px 0;">⬜ Saving results to database…</div>
+                </div>
+                <div id="vtResult_\${sha256}" style="display:none;"></div>
+                <div style="width:100%;height:4px;background:#1e293b;border-radius:2px;overflow:hidden;margin-bottom:10px;">
+                  <div id="vtBar_\${sha256}" style="height:100%;width:0%;background:#3b82f6;transition:width 0.5s;"></div>
+                </div>
+                <p style="color:#64748b;font-size:11px;margin:0 0 14px 0;" id="vtTimer_\${sha256}">Elapsed: 0s</p>
+                <button id="vtCancelBtn_\${sha256}" onclick="document.getElementById('vtOverlay_\${sha256}').remove();"
+                  style="background:#ef4444;color:white;border:none;border-radius:6px;padding:8px 20px;cursor:pointer;font-size:12px;">
+                  Close
+                </button>
+              </div>
+            \`;
+            document.body.appendChild(overlay);
+
+            const timerEl = document.getElementById('vtTimer_' + sha256);
+            const barEl   = document.getElementById('vtBar_'   + sha256);
+            const startTs = Date.now();
+            const totalExpected = 120; // ~120s expected
+            const timerInterval = setInterval(() => {
+              const elapsed = Math.round((Date.now() - startTs) / 1000);
+              if (timerEl) timerEl.textContent = 'Elapsed: ' + elapsed + 's';
+              if (barEl)   barEl.style.width = Math.min(95, Math.round((elapsed / totalExpected) * 100)) + '%';
+            }, 1000);
+
+            function markVtStep(n, status) {
+              const el = document.getElementById('vtStep' + n + '_' + sha256);
+              if (!el) return;
+              if (status === 'done')   { el.style.color = '#10b981'; el.textContent = el.textContent.replace('⬜','✅').replace('⏳','✅'); }
+              else if (status === 'active') { el.style.color = '#f59e0b'; el.textContent = el.textContent.replace('⬜','⏳'); }
+              else if (status === 'error')  { el.style.color = '#ef4444'; el.textContent = el.textContent.replace('⬜','❌').replace('⏳','❌'); }
             }
+
+            // Approximate step timings (cumulative seconds)
+            const stepTimings = [0, 2, 8, 20, 80, 85, 90];
+            stepTimings.forEach((t, i) => {
+              if (i === 0) { markVtStep(1, 'active'); return; }
+              setTimeout(() => { markVtStep(i, 'done'); markVtStep(i + 1, 'active'); }, t * 1000);
+            });
+
+            if (btnEl) { btnEl.disabled = true; btnEl.textContent = '⏳ Scanning…'; }
+
+            fetch(getBasePath() + '/analyze-vt/' + sha256 + dateParam, { method: 'POST' })
+              .then(r => r.text().then(text => {
+                try { return { ok: r.ok, data: JSON.parse(text) }; }
+                catch (_) { return { ok: false, data: { error: 'Server returned non-JSON (status ' + r.status + ')' } }; }
+              }))
+              .then(({ ok, data }) => {
+                clearInterval(timerInterval);
+                if (barEl) barEl.style.width = '100%';
+                for (let i = 1; i <= 7; i++) markVtStep(i, data.error ? (i > 2 ? 'error' : 'done') : 'done');
+
+                const resultEl = document.getElementById('vtResult_' + sha256);
+                if (resultEl) resultEl.style.display = 'block';
+
+                if (data.error) {
+                  if (resultEl) resultEl.innerHTML = \`
+                    <div style="background:#7f1d1d;border-radius:6px;padding:12px;color:#fca5a5;font-size:12px;margin-bottom:12px;">
+                      ❌ Multi-engine scan failed:<br><strong>\${data.error}</strong>
+                    </div>\`;
+                } else {
+                  const a = data.analysis || {};
+                  const st = (a.status || 'unknown').toLowerCase();
+                  const stColor = st === 'malicious' ? '#ef4444' : st === 'suspicious' ? '#f59e0b' : st === 'safe' ? '#10b981' : '#94a3b8';
+                  if (resultEl) resultEl.innerHTML = \`
+                    <div style="background:#052e16;border:1px solid #16a34a;border-radius:6px;padding:12px;color:#4ade80;font-size:12px;margin-bottom:12px;">
+                      ✅ Multi-engine scan completed!
+                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;text-align:left;">
+                        <span style="color:#94a3b8;">🔎 Detection Ratio:</span><span style="color:#e2e8f0;font-weight:700;">\${a.detectionRatio || 'N/A'}</span>
+                        <span style="color:#94a3b8;">🛡️ Status:</span><span style="color:\${stColor};font-weight:700;">\${st.toUpperCase()}</span>
+                        <span style="color:#94a3b8;">🔴 Malicious:</span><span style="color:#e2e8f0;">\${a.maliciousCount ?? 0} engines</span>
+                        <span style="color:#94a3b8;">🟡 Suspicious:</span><span style="color:#e2e8f0;">\${a.suspiciousCount ?? 0} engines</span>
+                        <span style="color:#94a3b8;">✅ Clean:</span><span style="color:#e2e8f0;">\${a.harmlessCount ?? 0} engines</span>
+                        <span style="color:#94a3b8;">📊 Total Engines:</span><span style="color:#e2e8f0;">\${a.totalEngines ?? 0}</span>
+                      </div>
+                    </div>
+                    <button onclick="viewVirusTotalResults('\${sha256}', '\${packageName}')"
+                      style="background:#2563eb;color:white;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:12px;margin-bottom:8px;width:100%;">
+                      📊 View Detailed Engine Results
+                    </button>\`;
+                }
+
+                if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Re-scan'; }
+                const cancelBtn = document.getElementById('vtCancelBtn_' + sha256);
+                if (cancelBtn) {
+                  cancelBtn.textContent = 'Close & Refresh';
+                  cancelBtn.onclick = () => { document.getElementById('vtOverlay_' + sha256)?.remove(); location.reload(); };
+                }
+              })
+              .catch(err => {
+                clearInterval(timerInterval);
+                const resultEl = document.getElementById('vtResult_' + sha256);
+                if (resultEl) { resultEl.style.display = 'block'; resultEl.innerHTML = \`<div style="background:#7f1d1d;border-radius:6px;padding:12px;color:#fca5a5;font-size:12px;margin-bottom:12px;">❌ Network error: \${err.message}</div>\`; }
+                for (let i = 3; i <= 7; i++) markVtStep(i, 'error');
+                if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Multi-Engine Scan'; }
+              });
           }
           
           function downloadMobsfReport(sha256) {
@@ -2756,6 +3308,11 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             const selectedDate = document.getElementById('date-picker').value;
             const url = getBasePath() + '/dynamic-report/' + sha256 + (selectedDate ? '?date=' + selectedDate : '');
             window.location.href = url;
+          }
+
+          function viewStaticResults(sha256) {
+            const selectedDate = document.getElementById('date-picker').value;
+            window.location.href = getBasePath() + '/static-results/' + sha256 + (selectedDate ? '?date=' + selectedDate : '');
           }
 
           function viewDynamicResults(sha256) {
@@ -3395,10 +3952,13 @@ router.post("/dynamic-analysis/:sha256", requireWebAuth, async (req, res) => {
     // TLS: prefer dedicated call result, fallback to dynamic report JSON fields
     // MobSF may store TLS data under several different keys depending on version
     const tlsRaw = pipelineResult.tlsResult;
-    const hasTlsDirect = tlsRaw && typeof tlsRaw === 'object' && Object.keys(tlsRaw).length > 0;
+    // Check if tlsRaw has actual test result fields (not just status/message)
+    const tlsTestFields = ['has_cleartext', 'tls_misconfigured', 'pin_or_transparency_bypassed', 'no_tls_pin_or_transparency', 'tls_tests', 'ssl_tests'];
+    const hasTlsTestData = tlsRaw && typeof tlsRaw === 'object' && 
+      (tlsTestFields.some(f => f in tlsRaw) || (Array.isArray(tlsRaw.tls_tests) && tlsRaw.tls_tests.length > 0));
     const tlsFromReport = dynReport.tls_tests || dynReport.ssl_tests || dynReport.tls ||
       dynReport.tls_data || dynReport.network_security?.tls || null;
-    const tlsFinal = hasTlsDirect ? tlsRaw : (tlsFromReport || null);
+    const tlsFinal = hasTlsTestData ? tlsRaw : (tlsFromReport || null);
     console.log('[Dynamic] tlsResult from dedicated call:', JSON.stringify(tlsRaw));
     console.log('[Dynamic] tls from dynReport:', JSON.stringify(tlsFromReport));
     console.log('[Dynamic] tlsFinal saved:', JSON.stringify(tlsFinal));
@@ -3570,12 +4130,19 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
     let tlsFlat = null;
     const _tlsRaw = da.tls_tests || raw.tls_tests || raw.tls || raw.ssl_tests || null;
     if (_tlsRaw && typeof _tlsRaw === 'object') {
-      if ('has_cleartext' in _tlsRaw || 'tls_misconfigured' in _tlsRaw) {
+      // Case 1: Already flat object with test result keys
+      if ('has_cleartext' in _tlsRaw || 'tls_misconfigured' in _tlsRaw || 'pin_or_transparency_bypassed' in _tlsRaw) {
         tlsFlat = _tlsRaw;
-      } else if (_tlsRaw.tls_tests && typeof _tlsRaw.tls_tests === 'object' && !Array.isArray(_tlsRaw.tls_tests)) {
-        tlsFlat = _tlsRaw.tls_tests;
-      } else if (Array.isArray(_tlsRaw.tls_tests)) {
-        // array of {name, result}
+      } 
+      // Case 2: Nested tls_tests object (not array)
+      else if (_tlsRaw.tls_tests && typeof _tlsRaw.tls_tests === 'object' && !Array.isArray(_tlsRaw.tls_tests)) {
+        // Recurse to extract test data from nested structure
+        if ('has_cleartext' in _tlsRaw.tls_tests || 'tls_misconfigured' in _tlsRaw.tls_tests) {
+          tlsFlat = _tlsRaw.tls_tests;
+        }
+      } 
+      // Case 3: Array of test objects [{name, result}, ...]
+      else if (Array.isArray(_tlsRaw.tls_tests) && _tlsRaw.tls_tests.length > 0) {
         tlsFlat = {};
         for (const t of _tlsRaw.tls_tests) {
           const n = (t.name || '').toLowerCase();
@@ -3584,7 +4151,11 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
           if (n.includes('bypass'))        tlsFlat.pin_or_transparency_bypassed = !t.result;
           if (n.includes('pinning') && !n.includes('bypass')) tlsFlat.no_tls_pin_or_transparency = !t.result;
         }
-      } else if (Array.isArray(_tlsRaw)) {
+        // If we extracted test data, keep it; otherwise set to null
+        if (Object.keys(tlsFlat).length === 0) tlsFlat = null;
+      } 
+      // Case 4: Direct array of test objects
+      else if (Array.isArray(_tlsRaw) && _tlsRaw.length > 0) {
         tlsFlat = {};
         for (const t of _tlsRaw) {
           const n = (t.name || '').toLowerCase();
@@ -3593,6 +4164,8 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
           if (n.includes('bypass'))        tlsFlat.pin_or_transparency_bypassed = !t.result;
           if (n.includes('pinning') && !n.includes('bypass')) tlsFlat.no_tls_pin_or_transparency = !t.result;
         }
+        // If we extracted test data, keep it; otherwise set to null
+        if (Object.keys(tlsFlat).length === 0) tlsFlat = null;
       }
     }
     const TLS_TESTS = tlsFlat ? [

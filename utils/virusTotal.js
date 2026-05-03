@@ -232,33 +232,61 @@ const analyzeFileWithVirusTotal = async (filePath) => {
   console.log(`[VT Analysis] Starting complete file analysis for: ${filePath}`);
   
   try {
-    // Calculate local hash as fallback
+    // Step 1: Calculate local SHA-256 hash
     const localFileHash = await calculateFileHash(filePath);
-    
-    // Step 1: Upload file to VirusTotal
-    const analysisId = await uploadFileToVirusTotal(filePath);
-    
-    // Step 2: Poll until analysis completes
-    const analysisResult = await pollAnalysisStatus(analysisId);
-    
-    // Step 3: Get the file hash from analysis result or use local hash
-    let fileHash = analysisResult?.attributes?.results?.sha256 || 
-                   analysisResult?.meta?.file_info?.sha256;
-    
-    if (!fileHash) {
-      console.warn(`[VT Analysis] Could not extract file hash from VirusTotal response, using local hash: ${localFileHash}`);
-      fileHash = localFileHash;
-    } else {
-      console.log(`[VT Analysis] File hash from VirusTotal: ${fileHash}`);
-      if (fileHash !== localFileHash) {
-        console.warn(`[VT Analysis] Hash mismatch! VirusTotal: ${fileHash}, Local: ${localFileHash}`);
+    console.log(`[VT Analysis] Local SHA-256: ${localFileHash}`);
+
+    // Step 2: Check if VirusTotal already has results for this file (by hash)
+    let fileReport = null;
+    let analysisId = null;
+    try {
+      fileReport = await getFileAnalysisReport(localFileHash);
+      const existingStats = fileReport?.attributes?.last_analysis_stats;
+      const hasResults = existingStats &&
+        ((existingStats.malicious || 0) + (existingStats.harmless || 0) +
+         (existingStats.undetected || 0) + (existingStats.suspicious || 0)) > 0;
+      if (hasResults) {
+        console.log(`[VT Analysis] File already analysed on VirusTotal — using cached results`);
+      } else {
+        // Known to VT but no engine results yet — still upload to trigger fresh scan
+        fileReport = null;
+      }
+    } catch (_) {
+      // 404 → not yet in VT, proceed to upload
+      fileReport = null;
+    }
+
+    // Step 3: If no cached results, upload and poll
+    if (!fileReport) {
+      try {
+        analysisId = await uploadFileToVirusTotal(filePath);
+      } catch (uploadErr) {
+        // If upload says "already exists" (409) but gave no analysisId, fall back to hash lookup
+        if (uploadErr.message && uploadErr.message.includes('already')) {
+          console.log(`[VT Analysis] Upload returned conflict — fetching results by hash`);
+          fileReport = await getFileAnalysisReport(localFileHash);
+        } else {
+          throw uploadErr;
+        }
+      }
+
+      if (!fileReport) {
+        // Poll the new analysis
+        const analysisResult = await pollAnalysisStatus(analysisId);
+
+        // Extract hash from poll result or use local
+        let fileHash = analysisResult?.meta?.file_info?.sha256 ||
+                       analysisResult?.attributes?.sha256 ||
+                       localFileHash;
+        console.log(`[VT Analysis] Using hash for report lookup: ${fileHash}`);
+
+        // Step 4: Fetch detailed file report
+        fileReport = await getFileAnalysisReport(fileHash);
       }
     }
     
-    // Step 4: Get detailed file report
-    const fileReport = await getFileAnalysisReport(fileHash);
-    
     // Step 5: Process and return results
+    const finalFileHash = fileReport?.attributes?.sha256 || localFileHash;
     const stats = fileReport?.attributes?.last_analysis_stats;
     const scanDate = fileReport?.attributes?.last_analysis_date;
     const fileName = fileReport?.attributes?.meaningful_name || 
@@ -281,7 +309,7 @@ const analyzeFileWithVirusTotal = async (filePath) => {
 
     const result = {
       status: status,
-      fileHash: fileHash,
+      fileHash: finalFileHash,
       fileName: fileName,
       scanTime: scanDate ? new Date(scanDate * 1000).toISOString() : new Date().toISOString(),
       detectionRatio: `${detectedEngines}/${totalEngines}`,

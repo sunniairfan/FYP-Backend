@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 // MobSF server URL and API key from environment variables or defaults
 const MOBSF_URL = process.env.MOBSF_URL || 'http://localhost:8000';
-const API_KEY = process.env.MOBSF_API_KEY || 'cd90ad38105101ec555ab6e219bab83ab47eb33b10b41979b34ae48235929e16';
+const API_KEY = process.env.MOBSF_API_KEY || '822da3b3ad8743dc3536e0e0121c854658f4bfea244401b1552c54130ef943f8';
 function log(message, data = null) {
   console.log(`[MobSF] ${message}`, data ? JSON.stringify(data, null, 2) : '');
 }
@@ -394,6 +394,13 @@ async function runTlsTests(hash) {
       timeout: 60000
     });
     log('TLS tests completed', response.data);
+    // Log the structure to understand MobSF response format
+    log('TLS response structure', {
+      hasData: !!response.data,
+      isObject: typeof response.data === 'object',
+      keys: response.data && typeof response.data === 'object' ? Object.keys(response.data) : null,
+      fullData: response.data
+    });
     return response.data;
   } catch (error) {
     logError(`Failed TLS tests for hash: ${hash}`, error);
