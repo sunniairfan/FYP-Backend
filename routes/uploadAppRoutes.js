@@ -6,6 +6,8 @@ const mobsf = require("../utils/mobsf");
 const { analyzeFileWithVirusTotal, checkVirusTotal } = require("../utils/virusTotal");
 const { createNotification } = require("../utils/notifications");
 const { calculateWeightedRiskScore } = require("../utils/riskAlgorithm");
+const { getRequestsIndexName } = require("../utils/analysisRequests");
+const { upsertBlacklistEntry, getBlacklistEntry } = require("../utils/blacklistDB");
 const router = express.Router();
 
 // Middleware to require authentication for web routes
@@ -446,7 +448,13 @@ router.get("/report/:sha256", requireWebAuth, async (req, res) => {
     }
 
     const appData = searchRes.hits.hits[0]._source;
-    const md5Hash = appData.mobsfHash;
+    let md5Hash = appData.mobsfHash;
+
+    if (!md5Hash) {
+      console.log(`[PDF Report] No mobsfHash in DB for ${sha256}, searching MobSF scans...`);
+      const found = await mobsf.findHashBySha256(sha256);
+      md5Hash = found?.hash || null;
+    }
 
     if (!md5Hash) {
       console.error(`[PDF Report] No MobSF hash available for app: ${sha256}`);
@@ -491,8 +499,10 @@ router.get("/static-results/:sha256", requireWebAuth, async (req, res) => {
     const selectedDate = req.query.date || new Date().toISOString().split("T")[0];
     const indexName = getIndexNameForDate(selectedDate);
 
+    // Exclude dynamicAnalysis (large nested raw_report) — not needed for static page
     const searchRes = await esClient.search({
       index: indexName, size: 1,
+      _source: { excludes: ['dynamicAnalysis'] },
       query: { term: { sha256: { value: sha256 } } },
     });
 
@@ -501,18 +511,85 @@ router.get("/static-results/:sha256", requireWebAuth, async (req, res) => {
     }
 
     const appData = searchRes.hits.hits[0]._source;
-    const ms = appData.mobsfAnalysis;
-    if (!ms) {
-      return res.status(400).send('<html><body style="background:#05090f;color:white;font-family:Arial;text-align:center;padding:50px"><h1>⚠️ No static analysis available</h1><p style="color:#94a3b8">Run Static Analysis first.</p><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
+    let ms = appData.mobsfAnalysis;
+    let md5Hash = appData.mobsfHash || null;
+    // report may already be cached in ES (from a previous visit)
+    let report = appData.mobsfReportJson || null;
+
+    // Fallback: if mobsfHash is missing, find it in MobSF — returns {hash, reportJson}
+    if (!md5Hash) {
+      console.log(`[Static Results] No mobsfHash in DB for ${sha256}, searching MobSF scans...`);
+      const found = await mobsf.findHashBySha256(sha256);
+      if (found) {
+        md5Hash = found.hash;
+        if (!report) report = found.reportJson; // reuse already-fetched report, avoid double-fetch
+        console.log(`[Static Results] Found MD5 ${md5Hash} in MobSF for ${sha256}`);
+      }
     }
 
-    const md5Hash = appData.mobsfHash || null;
     const MOBSF = process.env.MOBSF_URL || 'http://localhost:8000';
 
-    // Fetch full JSON report live from MobSF
-    let report = {};
-    if (md5Hash) {
-      try { report = await mobsf.getJsonReport(md5Hash); } catch (_) { report = {}; }
+    // If report not cached and not returned by findHashBySha256, fetch from MobSF
+    if (!report && md5Hash) {
+      try {
+        report = await Promise.race([
+          mobsf.getJsonReport(md5Hash),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))
+        ]);
+        // Cache slim fields in ES so next load skips this entirely
+        try {
+          const docId = searchRes.hits.hits[0]._id;
+          const slim = {
+            permissions: report.permissions,
+            code_analysis: report.code_analysis,
+            manifest_analysis: report.manifest_analysis,
+            network_security: report.network_security,
+            appsec: report.appsec,
+            version_name: report.version_name,
+            version_code: report.version_code,
+            min_sdk: report.min_sdk,
+            target_sdk: report.target_sdk,
+            size: report.size,
+            app_name: report.app_name,
+            package_name: report.package_name,
+            file_name: report.file_name,
+            sha256: report.sha256,
+          };
+          await esClient.update({
+            index: indexName, id: docId,
+            body: { doc: { mobsfReportJson: slim } }
+          });
+        } catch (_) {}
+      } catch (_) { report = {}; }
+    }
+    if (!report) report = {};
+
+    // Build ms from live report if not stored in DB
+    if (!ms && report && report.appsec) {
+      const dangerousPermissions = [];
+      if (report.permissions && typeof report.permissions === 'object') {
+        for (const [permName, permData] of Object.entries(report.permissions)) {
+          if (permData && permData.status === 'dangerous') dangerousPermissions.push(permName);
+        }
+      }
+      let highRiskFindings = 0;
+      if (report.code_analysis && typeof report.code_analysis === 'object') {
+        highRiskFindings = Object.entries(report.code_analysis).filter(
+          ([, f]) => f && f.metadata && f.metadata.severity === 'high'
+        ).length;
+      }
+      const securityScore = report.appsec?.security_score || report.security_score || 0;
+      ms = {
+        security_score: securityScore,
+        dangerous_permissions: dangerousPermissions,
+        high_risk_findings: highRiskFindings,
+        scan_type: report.scan_type || 'apk',
+        file_name: report.file_name || '',
+      };
+    }
+
+    if (!ms) {
+      return res.status(400).send('<html><body style="background:#05090f;color:white;font-family:Arial;text-align:center;padding:50px"><h1>⚠️ No static analysis available</h1><p style="color:#94a3b8">Run Static Analysis first.</p><a href="/uploadapp/apps" style="color:#60a5fa">← Back</a></body></html>');
     }
 
     const esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -1698,6 +1775,65 @@ router.get("/apps", requireWebAuth, async (req, res) => {
         id: hit._id,
         appType: hit._source.appType || 'system'
       }));
+
+      try {
+        const requestResult = await esClient.search({
+          index: getRequestsIndexName(),
+          size: 200,
+          sort: [{ createdAt: { order: "desc", unmapped_type: "date" } }],
+          query: {
+            bool: {
+              filter: [
+                { term: { type: "apk_upload_request" } },
+                {
+                  bool: {
+                    should: [
+                      { term: { sourceIndex: indexName } },
+                      { term: { sourceDate: selectedDate } },
+                    ],
+                    minimum_should_match: 1,
+                  },
+                },
+              ],
+            },
+          },
+        });
+
+        const soarRequests = requestResult.hits.hits.map((hit) => hit._source || {});
+        const requestByPackage = new Map();
+        const requestBySha = new Map();
+
+        soarRequests.forEach((request) => {
+          if (request.packageName && !requestByPackage.has(request.packageName)) {
+            requestByPackage.set(request.packageName, request);
+          }
+          if (request.sha256 && !requestBySha.has(request.sha256)) {
+            requestBySha.set(request.sha256, request);
+          }
+        });
+
+        apps = apps.map((app) => {
+          if (String(app.uploadSource || '').toUpperCase() === 'SOAR' || app.soarTriggeredAt || app.soarId) {
+            return app;
+          }
+
+          const request = requestBySha.get(app.sha256) || requestByPackage.get(app.packageName);
+          if (!request) {
+            return app;
+          }
+
+          return {
+            ...app,
+            uploadSource: 'SOAR',
+            soarTriggeredAt: request.createdAt || app.timestamp,
+            soarId: request.soarId || app.soarId || null,
+          };
+        });
+      } catch (requestError) {
+        if (requestError?.meta?.statusCode !== 404) {
+          console.warn("[Apps Route] Failed to enrich SOAR metadata:", requestError.message);
+        }
+      }
     } catch (indexError) {
       console.log(`[Apps Route] Index ${indexName} not found or no data`);
     }
@@ -2806,7 +2942,10 @@ router.get("/apps", requireWebAuth, async (req, res) => {
 
       apps.forEach((app) => {
         const fileInfo = app.apkFileName ? `${app.apkFileName}` : "No file uploaded";
-        const uploadDate = new Date(app.timestamp).toLocaleDateString();
+        const uploadDate = app.timestamp ? new Date(app.timestamp).toLocaleDateString() : 'N/A';
+        const uploadDateTime = app.timestamp ? new Date(app.timestamp).toLocaleString() : 'N/A';
+        const isSoarTriggered = String(app.uploadSource || '').toUpperCase() === 'SOAR' || Boolean(app.soarId || app.soarTriggeredAt);
+        const soarTriggeredAt = app.soarTriggeredAt ? new Date(app.soarTriggeredAt).toLocaleString() : uploadDateTime;
         const permissionCount = app.permissions ? app.permissions.length : 0;
         const hasMobsfAnalysis = app.mobsfAnalysis && app.mobsfAnalysis.security_score !== undefined;
         const hasVirusTotalAnalysis = app.virusTotalAnalysis && app.virusTotalAnalysis.detectionRatio;
@@ -2832,7 +2971,9 @@ router.get("/apps", requireWebAuth, async (req, res) => {
               <div class="app-name">${app.appName || "Unknown App"}</div>
               <div class="package-name">${app.packageName}</div>
               <div class="app-package-meta">
-                <div class="meta-line"><strong>Uploaded</strong><span>${uploadDate}</span></div>
+                ${isSoarTriggered
+                  ? `<div class="meta-line"><strong>SOAR</strong><span>Action triggered at ${escapeHtmlAttr(soarTriggeredAt)}</span></div>`
+                  : `<div class="meta-line"><strong>Uploaded</strong><span>${escapeHtmlAttr(uploadDate)}</span></div>`}
                 ${app.device_id ? `<div class="meta-line"><strong>Device</strong><span class="meta-value-device">${escapeHtmlAttr(app.device_id)}</span></div>` : ''}
                 ${permissionCount > 0 ? `<div class="meta-line"><strong>Perms</strong><span>${permissionCount}</span></div>` : ""}
               </div>
@@ -3735,7 +3876,21 @@ router.post("/update-final-decision/:sha256", requireWebAuth, async (req, res) =
     }
 
     const docId = searchRes.hits.hits[0]._id;
+    const existingDoc = searchRes.hits.hits[0]._source || {};
     const analyst = req.session.username || 'Unknown Analyst';
+    const existingBlacklist = existingDoc.blacklist || {};
+
+    const persistentEntry = finalStatus === 'malicious'
+      ? upsertBlacklistEntry(sha256, {
+          source: 'SOC Analyst',
+          updatedBy: analyst,
+          reason: socRemarks,
+          blacklistedAt: decisionTimestamp || new Date().toISOString(),
+          appName: existingDoc.appName,
+          packageName: existingDoc.packageName,
+          active: true,
+        })
+      : getBlacklistEntry(sha256);
 
     // Update database with final decision
     const updateBody = {
@@ -3746,6 +3901,16 @@ router.post("/update-final-decision/:sha256", requireWebAuth, async (req, res) =
         decidedAt: decisionTimestamp || new Date().toISOString()
       },
       status: finalStatus, // Also update main status field for sorting/filtering
+      statusSource: "SOC Analyst",
+      socUpdatedAt: decisionTimestamp || new Date().toISOString(),
+      blacklist: {
+        active: finalStatus === 'malicious' || existingBlacklist.active === true,
+        reason: socRemarks || existingBlacklist.reason,
+        firstBlacklistedAt: existingBlacklist.firstBlacklistedAt || persistentEntry?.firstBlacklistedAt || null,
+        updatedAt: decisionTimestamp || new Date().toISOString(),
+        updatedBy: analyst,
+        source: persistentEntry?.source || existingBlacklist.source || 'SOC Analyst',
+      },
       lastUpdatedBy: analyst,
       lastUpdated: new Date().toISOString()
     };
@@ -3949,18 +4114,42 @@ router.post("/dynamic-analysis/:sha256", requireWebAuth, async (req, res) => {
     const domains = dynReport.domains || {};
     const emails = dynReport.emails || [];
     const urls = dynReport.urls || [];
-    // TLS: prefer dedicated call result, fallback to dynamic report JSON fields
-    // MobSF may store TLS data under several different keys depending on version
-    const tlsRaw = pipelineResult.tlsResult;
-    // Check if tlsRaw has actual test result fields (not just status/message)
-    const tlsTestFields = ['has_cleartext', 'tls_misconfigured', 'pin_or_transparency_bypassed', 'no_tls_pin_or_transparency', 'tls_tests', 'ssl_tests'];
-    const hasTlsTestData = tlsRaw && typeof tlsRaw === 'object' && 
-      (tlsTestFields.some(f => f in tlsRaw) || (Array.isArray(tlsRaw.tls_tests) && tlsRaw.tls_tests.length > 0));
-    const tlsFromReport = dynReport.tls_tests || dynReport.ssl_tests || dynReport.tls ||
-      dynReport.tls_data || dynReport.network_security?.tls || null;
-    const tlsFinal = hasTlsTestData ? tlsRaw : (tlsFromReport || null);
-    console.log('[Dynamic] tlsResult from dedicated call:', JSON.stringify(tlsRaw));
-    console.log('[Dynamic] tls from dynReport:', JSON.stringify(tlsFromReport));
+
+    // TLS: prefer dedicated call result, fallback to dynamic report fields, then derive from traffic
+    function extractTlsPipeline(val) {
+      if (!val || typeof val !== 'object') return null;
+      const keys = ['has_cleartext', 'tls_misconfigured', 'pin_or_transparency_bypassed', 'no_tls_pin_or_transparency'];
+      if (keys.some(k => k in val)) return val;
+      const inner = val.tls_tests;
+      if (inner && typeof inner === 'object' && !Array.isArray(inner) && keys.some(k => k in inner)) return inner;
+      const arr = Array.isArray(inner) ? inner : (Array.isArray(val) ? val : null);
+      if (arr && arr.length > 0) {
+        const out = {};
+        for (const t of arr) {
+          const n = (t.name || '').toLowerCase();
+          if (n.includes('cleartext'))                         out.has_cleartext = !t.result;
+          if (n.includes('misconfigur'))                       out.tls_misconfigured = !t.result;
+          if (n.includes('bypass'))                            out.pin_or_transparency_bypassed = !t.result;
+          if (n.includes('pinning') && !n.includes('bypass')) out.no_tls_pin_or_transparency = !t.result;
+        }
+        if (Object.keys(out).length > 0) return out;
+      }
+      return null;
+    }
+
+    let tlsFinal = extractTlsPipeline(pipelineResult.tlsResult) ||
+                   extractTlsPipeline(dynReport.tls_tests) ||
+                   extractTlsPipeline(dynReport.tls) ||
+                   extractTlsPipeline(dynReport.ssl_tests);
+
+    // Last resort: derive cleartext flag from captured URLs
+    if (!tlsFinal) {
+      const allUrls = [...(Array.isArray(urls) ? urls : []), ...Object.keys(domains)].map(u => (typeof u === 'string' ? u : (u.url || '')));
+      if (allUrls.length > 0) {
+        tlsFinal = { has_cleartext: allUrls.some(u => /^http:\/\//i.test(u)) };
+        if (allUrls.some(u => /^https:\/\//i.test(u))) tlsFinal.tls_misconfigured = false;
+      }
+    }
     console.log('[Dynamic] tlsFinal saved:', JSON.stringify(tlsFinal));
 
     // Extract network/security findings
@@ -4068,7 +4257,13 @@ router.get("/dynamic-report/:sha256", requireWebAuth, async (req, res) => {
     }
 
     const appData = searchRes.hits.hits[0]._source;
-    const md5Hash = appData.mobsfHash;
+    let md5Hash = appData.mobsfHash;
+
+    if (!md5Hash) {
+      console.log(`[Dynamic PDF] No mobsfHash in DB for ${sha256}, searching MobSF scans...`);
+      const found = await mobsf.findHashBySha256(sha256);
+      md5Hash = found?.hash || null;
+    }
 
     if (!md5Hash) {
       return res.status(400).send("No MobSF analysis available for this app");
@@ -4107,6 +4302,7 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
     const searchRes = await esClient.search({
       index: indexName,
       size: 1,
+      _source: { excludes: ['mobsfReportJson'] },
       query: { term: { sha256: { value: sha256 } } },
     });
 
@@ -4122,52 +4318,97 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
     }
 
     const raw = da.raw_report || {};
-    const md5Hash = raw.hash || appData.mobsfHash || null;
+    let md5Hash = raw.hash || appData.mobsfHash || null;
+    if (!md5Hash) {
+      console.log(`[Dynamic Results] No mobsfHash in DB for ${sha256}, searching MobSF scans...`);
+      const found = await mobsf.findHashBySha256(sha256);
+      md5Hash = found?.hash || null;
+    }
     const MOBSF = process.env.MOBSF_URL || 'http://localhost:8000';
 
     // ── TLS extraction ─────────────────────────────────────────────────────────
-    // Try multiple locations MobSF may store TLS data
+    // Helper: extract flat TLS object from any raw value MobSF might return
+    function extractTlsFlat(val) {
+      if (!val || typeof val !== 'object') return null;
+      // Direct flat keys
+      if ('has_cleartext' in val || 'tls_misconfigured' in val || 'pin_or_transparency_bypassed' in val) return val;
+      // Nested .tls_tests object
+      if (val.tls_tests && typeof val.tls_tests === 'object' && !Array.isArray(val.tls_tests)) {
+        if ('has_cleartext' in val.tls_tests || 'tls_misconfigured' in val.tls_tests) return val.tls_tests;
+      }
+      // Array of {name, result} inside .tls_tests
+      const arr = Array.isArray(val.tls_tests) ? val.tls_tests : (Array.isArray(val) ? val : null);
+      if (arr && arr.length > 0) {
+        const out = {};
+        for (const t of arr) {
+          const n = (t.name || '').toLowerCase();
+          if (n.includes('cleartext'))                         out.has_cleartext = !t.result;
+          if (n.includes('misconfigur'))                       out.tls_misconfigured = !t.result;
+          if (n.includes('bypass'))                            out.pin_or_transparency_bypassed = !t.result;
+          if (n.includes('pinning') && !n.includes('bypass')) out.no_tls_pin_or_transparency = !t.result;
+        }
+        if (Object.keys(out).length > 0) return out;
+      }
+      return null;
+    }
+
     let tlsFlat = null;
-    const _tlsRaw = da.tls_tests || raw.tls_tests || raw.tls || raw.ssl_tests || null;
-    if (_tlsRaw && typeof _tlsRaw === 'object') {
-      // Case 1: Already flat object with test result keys
-      if ('has_cleartext' in _tlsRaw || 'tls_misconfigured' in _tlsRaw || 'pin_or_transparency_bypassed' in _tlsRaw) {
-        tlsFlat = _tlsRaw;
-      } 
-      // Case 2: Nested tls_tests object (not array)
-      else if (_tlsRaw.tls_tests && typeof _tlsRaw.tls_tests === 'object' && !Array.isArray(_tlsRaw.tls_tests)) {
-        // Recurse to extract test data from nested structure
-        if ('has_cleartext' in _tlsRaw.tls_tests || 'tls_misconfigured' in _tlsRaw.tls_tests) {
-          tlsFlat = _tlsRaw.tls_tests;
+    let tlsDerived = false;
+
+    // 1. Try stored data in ES (fast path)
+    tlsFlat = extractTlsFlat(da.tls_tests) ||
+              extractTlsFlat(raw.tls_tests) ||
+              extractTlsFlat(raw.tls) ||
+              extractTlsFlat(raw.ssl_tests);
+
+    // 2. If not in ES, fetch live dynamic report from MobSF (with 8s timeout)
+    if (!tlsFlat && md5Hash) {
+      try {
+        console.log(`[TLS] Not in ES, fetching live dynamic report from MobSF for ${md5Hash}`);
+        const liveReport = await Promise.race([
+          mobsf.getDynamicReportJson(md5Hash),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))
+        ]);
+        tlsFlat = extractTlsFlat(liveReport?.tls_tests) ||
+                  extractTlsFlat(liveReport?.tls) ||
+                  extractTlsFlat(liveReport?.ssl_tests);
+        if (tlsFlat) {
+          console.log(`[TLS] Found TLS data in live MobSF report`, tlsFlat);
+          // Save back to ES so next load is instant
+          try {
+            const docId = searchRes.hits.hits[0]._id;
+            await esClient.update({
+              index: indexName, id: docId,
+              body: { doc: { 'dynamicAnalysis.tls_tests': tlsFlat } }
+            });
+          } catch (_) {}
         }
-      } 
-      // Case 3: Array of test objects [{name, result}, ...]
-      else if (Array.isArray(_tlsRaw.tls_tests) && _tlsRaw.tls_tests.length > 0) {
-        tlsFlat = {};
-        for (const t of _tlsRaw.tls_tests) {
-          const n = (t.name || '').toLowerCase();
-          if (n.includes('cleartext'))     tlsFlat.has_cleartext = !t.result;
-          if (n.includes('misconfigur'))   tlsFlat.tls_misconfigured = !t.result;
-          if (n.includes('bypass'))        tlsFlat.pin_or_transparency_bypassed = !t.result;
-          if (n.includes('pinning') && !n.includes('bypass')) tlsFlat.no_tls_pin_or_transparency = !t.result;
-        }
-        // If we extracted test data, keep it; otherwise set to null
-        if (Object.keys(tlsFlat).length === 0) tlsFlat = null;
-      } 
-      // Case 4: Direct array of test objects
-      else if (Array.isArray(_tlsRaw) && _tlsRaw.length > 0) {
-        tlsFlat = {};
-        for (const t of _tlsRaw) {
-          const n = (t.name || '').toLowerCase();
-          if (n.includes('cleartext'))     tlsFlat.has_cleartext = !t.result;
-          if (n.includes('misconfigur'))   tlsFlat.tls_misconfigured = !t.result;
-          if (n.includes('bypass'))        tlsFlat.pin_or_transparency_bypassed = !t.result;
-          if (n.includes('pinning') && !n.includes('bypass')) tlsFlat.no_tls_pin_or_transparency = !t.result;
-        }
-        // If we extracted test data, keep it; otherwise set to null
-        if (Object.keys(tlsFlat).length === 0) tlsFlat = null;
+      } catch (e) {
+        console.log(`[TLS] Live fetch failed: ${e.message}`);
       }
     }
+
+    // 3. Derive from captured traffic if MobSF has no TLS record
+    if (!tlsFlat) {
+      console.log(`[TLS] Deriving TLS data from captured traffic`);
+      const allUrls = [
+        ...(Array.isArray(raw.urls) ? raw.urls : []),
+        ...Object.keys(raw.domains || {})
+      ].map(u => (typeof u === 'string' ? u : (u.url || u.src || '')));
+
+      const hasHttp  = allUrls.some(u => /^http:\/\//i.test(u));
+      const hasHttps = allUrls.some(u => /^https:\/\//i.test(u));
+
+      // Only derive if we have some traffic data
+      if (allUrls.length > 0) {
+        tlsFlat = { has_cleartext: hasHttp };
+        // If app uses HTTPS traffic at all, TLS is likely configured
+        if (hasHttps) tlsFlat.tls_misconfigured = false;
+        tlsDerived = true;
+        console.log(`[TLS] Derived:`, tlsFlat);
+      }
+    }
+
     const TLS_TESTS = tlsFlat ? [
       { name: 'Cleartext Traffic Test',                       key: 'has_cleartext',                    desc: 'App does not transmit data in cleartext (HTTP without encryption).' },
       { name: 'TLS Misconfiguration Test',                    key: 'tls_misconfigured',                desc: 'TLS is properly configured — no weak ciphers or outdated protocols detected.' },
@@ -4318,13 +4559,15 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
     ${sectionHdr('🔒', 'TLS / SSL Security Tests', TLS_TESTS.length ? TLS_TESTS.length + ' tests' : null)}
     ${TLS_TESTS.length === 0
       ? `<p class="empty">TLS test data not captured. This happens when TLS tests run before the app starts network traffic. Re-run dynamic analysis and ensure the app makes HTTPS requests. You can view full TLS results on <a href="${MOBSF}/dynamic_report/${md5Hash || ''}" target="_blank">MobSF directly</a>.</p>`
-      : TLS_TESTS.map(t => {
+      : `${tlsDerived ? `<p style="font-size:11px;color:#64748b;margin-bottom:10px;padding:6px 10px;background:#0f172a;border-radius:6px;border-left:3px solid #3b82f6">ℹ️ TLS test results derived from captured network traffic (MobSF did not return direct TLS test results).</p>` : ''}
+        ${TLS_TESTS.map(t => {
+          if (!(t.key in tlsFlat)) return '';
           const failed = !!tlsFlat[t.key];
           return `<div class="tls-row">
             <div class="tls-status">${riskBadge(failed)}</div>
             <div><div class="tls-name">${esc(t.name)}</div><div class="tls-desc">${t.desc}</div></div>
           </div>`;
-        }).join('')
+        }).filter(Boolean).join('')}`
     }
   </div>
 
@@ -4520,13 +4763,6 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
     </table></div>
     <details><summary>View raw JSON</summary><pre>${esc(JSON.stringify(apiCalls, null, 2).substring(0, 6000))}</pre></details>` :
     `<pre>${esc(JSON.stringify(apiCalls, null, 2).substring(0, 6000))}</pre>`}
-  </div>` : ''}
-
-  <!-- ── 16. Frida Logs ────────────────────────────────────────── -->
-  ${fridaLogs ? `
-  <div class="section">
-    ${sectionHdr('📝', 'Frida Logs')}
-    <pre>${esc(typeof fridaLogs === 'string' ? fridaLogs.substring(0,4000) : JSON.stringify(fridaLogs, null, 2).substring(0,4000))}</pre>
   </div>` : ''}
 
   <!-- ── Download ──────────────────────────────────────────────── -->

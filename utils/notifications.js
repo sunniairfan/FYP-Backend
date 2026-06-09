@@ -6,6 +6,79 @@ const getNotificationsIndexName = () => {
   return `notifications_${year}-${month}-${day}`;
 };
 
+const getTodayDateKey = () => new Date().toISOString().slice(0, 10);
+
+const getLatestAppDoc = async (esClient, sha256) => {
+  if (!esClient || !sha256) {
+    return null;
+  }
+
+  try {
+    const result = await esClient.search({
+      index: "mobile_apps_*",
+      size: 1,
+      query: { term: { sha256: { value: sha256 } } },
+      sort: [{ timestamp: { order: "desc", unmapped_type: "date" } }],
+    });
+
+    const hit = result?.hits?.hits?.[0];
+    if (!hit) {
+      return null;
+    }
+
+    return {
+      index: hit._index,
+      id: hit._id,
+      source: hit._source || {},
+    };
+  } catch (err) {
+    if (err?.meta?.statusCode !== 404) {
+      console.error("Error fetching latest app doc for notification dedupe:", err.message);
+    }
+    return null;
+  }
+};
+
+const hasAppLevelNotificationMarker = (doc, detectedEngines) => {
+  const marker = doc?.autoNotification;
+  if (!marker) {
+    return false;
+  }
+
+  return (
+    marker.lastSentDate === getTodayDateKey() &&
+    Number(marker.detectedEngines) === Number(detectedEngines)
+  );
+};
+
+const markNotificationSentOnApp = async (esClient, sha256, details) => {
+  const latestDoc = await getLatestAppDoc(esClient, sha256);
+  if (!latestDoc) {
+    return;
+  }
+
+  try {
+    await esClient.update({
+      index: latestDoc.index,
+      id: latestDoc.id,
+      retry_on_conflict: 3,
+      body: {
+        doc: {
+          autoNotification: {
+            notificationId: details.notificationId,
+            lastSentAt: details.sentAt,
+            lastSentDate: details.sentAt.slice(0, 10),
+            detectedEngines: details.detectedEngines,
+            type: details.type,
+          },
+        },
+      },
+    });
+  } catch (err) {
+    console.error("Error updating app auto-notification marker:", err.message);
+  }
+};
+
 const parseDetectionRatioNumerator = (ratio) => {
   if (!ratio || typeof ratio !== "string") {
     return null;
@@ -42,6 +115,12 @@ const hasNotificationBeenSent = async (esClient, sha256, detectedEngines) => {
   }
 
   try {
+    const latestDoc = await getLatestAppDoc(esClient, sha256);
+    if (hasAppLevelNotificationMarker(latestDoc?.source, detectedEngines)) {
+      console.log(`⚠️  [NOTIFICATION DEDUP] App marker already set for SHA256: ${sha256.substring(0, 16)}... (${detectedEngines} engines)`);
+      return true;
+    }
+
     const notificationsIndex = getNotificationsIndexName();
     const result = await esClient.search({
       index: notificationsIndex,
@@ -159,6 +238,12 @@ const createNotification = async (esClient, payload) => {
       index: getNotificationsIndexName(),
       id: notification.id,
       document: notification,
+    });
+    await markNotificationSentOnApp(esClient, sha256, {
+      notificationId: notification.id,
+      sentAt: notification.createdAt,
+      detectedEngines,
+      type: notification.type,
     });
     console.log(`✅ [NOTIFICATION SENT] ${notification.title}`);
     return true;

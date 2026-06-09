@@ -83,9 +83,22 @@ router.get("/", async (req, res) => {
   const notificationsIndex = "notifications_*";
 
   try {
+    // Get today's date range for filtering (start of day to end of day)
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
     const result = await esClient.search({
       index: notificationsIndex,
       size: fetchSize,
+      query: {
+        range: {
+          createdAt: {
+            gte: todayStart.toISOString(),
+            lte: todayEnd.toISOString()
+          }
+        }
+      },
       sort: [
         { createdAt: { order: "desc" } },
       ],

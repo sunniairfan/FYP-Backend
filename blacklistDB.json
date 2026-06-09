@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "updatedAt": "2026-06-09T06:44:15.012Z",
+  "hashes": {
+    "abc123examplehash": {
+      "active": true,
+      "source": "SignatureDB",
+      "reason": "Known malicious hash from signature database",
+      "firstBlacklistedAt": "2026-06-09T06:44:05.199Z",
+      "lastUpdatedAt": "2026-06-09T06:44:05.199Z",
+      "updatedBy": "system"
+    },
+    "e99a18c428cb38d5f260853678922e03": {
+      "active": true,
+      "source": "SignatureDB",
+      "reason": "Known malicious hash from signature database",
+      "firstBlacklistedAt": "2026-06-09T06:44:05.199Z",
+      "lastUpdatedAt": "2026-06-09T06:44:05.199Z",
+      "updatedBy": "system"
+    },
+    "1d7f7abc18f63d79e5f3fc6a5c3e0f1e6b912f3e55e6a213f6a7029b3f4ed12a": {
+      "active": true,
+      "source": "SignatureDB",
+      "reason": "Known malicious hash from signature database",
+      "firstBlacklistedAt": "2026-06-09T06:44:05.199Z",
+      "lastUpdatedAt": "2026-06-09T06:44:05.199Z",
+      "updatedBy": "system"
+    },
+    "a78389ad2408b89f2d114197e923e1254ac104368125b603da9635ab03019b31": {
+      "active": true,
+      "source": "SOC Analyst",
+      "reason": "Marked as malicious by SOC analyst",
+      "firstBlacklistedAt": "2026-06-09T06:44:15.011Z",
+      "lastUpdatedAt": "2026-06-09T06:44:15.011Z",
+      "updatedBy": "SOC Analyst",
+      "appName": "NetHunter",
+      "packageName": "com.offsec.nethunter"
+    }
+  }
+}

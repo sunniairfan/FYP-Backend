@@ -8,12 +8,10 @@ const {
   isAlreadyUploadedFromDoc,
 } = require("../utils/analysisRequests");
 const mobsf = require("../utils/mobsf");
-
-// Path to signature database
-const signaturePath = path.join(__dirname, "../signatureDB.json");
-const knownHashes = fs.existsSync(signaturePath)
-  ? JSON.parse(fs.readFileSync(signaturePath, "utf-8"))
-  : [];
+const {
+  isHashBlacklisted,
+  getBlacklistEntry,
+} = require("../utils/blacklistDB");
 
 // Directory for storing uploaded APK files
 const uploadsDir = path.join(__dirname, "../uploads/apks");
@@ -40,7 +38,90 @@ const generateUploadId = () => {
   return `upl_${Date.now()}_${crypto.randomBytes(12).toString("hex")}`;
 };
 
-const isHashMalicious = (hash) => knownHashes.includes(hash);
+const generateSoarId = () => `SOAR-${Date.now()}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+
+const normalizeUploadSource = (value) => {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (
+    normalized === "soar" ||
+    normalized === "soar_action" ||
+    normalized === "virustotal_hash_check" ||
+    normalized === "analysis_request"
+  ) {
+    return "SOAR";
+  }
+  return "android_app";
+};
+
+const resolveSoarTriggeredAt = (...values) => {
+  for (const value of values) {
+    if (!value) {
+      continue;
+    }
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  return new Date().toISOString();
+};
+
+const buildSoarPromotionDoc = (currentDoc = {}) => {
+  return {
+    soarId: currentDoc.soarId || generateSoarId(),
+    soarTriggeredAt: resolveSoarTriggeredAt(currentDoc.soarTriggeredAt, new Date().toISOString()),
+    soarRequestStatus: "pending_upload",
+    soarActionRequestedAt: new Date().toISOString(),
+    timestamp: new Date(),
+  };
+};
+
+const isHashMalicious = (hash) => isHashBlacklisted(hash);
+
+const resolveAppType = (doc = {}, incomingAppType = "system") => {
+  const sawUserBefore = doc.seenAsUserApp === true;
+  const sawSystemBefore = doc.seenAsSystemApp === true;
+  const incomingIsUser = incomingAppType === "user";
+  const incomingIsSystem = incomingAppType === "system";
+
+  const seenAsUserApp = sawUserBefore || incomingIsUser;
+  const seenAsSystemApp = sawSystemBefore || incomingIsSystem;
+  const appType = seenAsUserApp ? "user" : "system";
+
+  return { appType, seenAsUserApp, seenAsSystemApp };
+};
+
+const dedupeScannedApps = (userApps = [], systemApps = []) => {
+  const normalizedUser = Array.isArray(userApps) ? userApps : [];
+  const normalizedSystem = Array.isArray(systemApps) ? systemApps : [];
+
+  const seenKeys = new Set();
+  const dedupedUser = [];
+  const dedupedSystem = [];
+
+  const getKey = (app = {}) => {
+    const sha = String(app.sha256 || "").trim().toLowerCase();
+    if (sha) return `sha:${sha}`;
+    const pkg = String(app.packageName || "").trim().toLowerCase();
+    return pkg ? `pkg:${pkg}` : "";
+  };
+
+  for (const app of normalizedUser) {
+    const key = getKey(app);
+    if (!key || seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    dedupedUser.push(app);
+  }
+
+  for (const app of normalizedSystem) {
+    const key = getKey(app);
+    if (!key || seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    dedupedSystem.push(app);
+  }
+
+  return { dedupedUser, dedupedSystem };
+};
 
 // Calculate SHA-256 hash of a file
 const calculateFileHash = (filePath) => {
@@ -152,6 +233,29 @@ const uploadApp = async (req, res) => {
     }
 
     const app = apps[0];
+    const rawUploadSource =
+      metadata.uploadSource ||
+      metadata.triggerSource ||
+      metadata.source ||
+      app.uploadSource ||
+      app.triggerSource ||
+      app.source ||
+      (metadata.soarId || app.soarId ? "soar" : "android_app");
+    const uploadSource = normalizeUploadSource(rawUploadSource);
+    const isSoarUpload = uploadSource === "SOAR";
+    const soarId = metadata.soarId || app.soarId || null;
+    const soarTriggeredAt = isSoarUpload
+      ? resolveSoarTriggeredAt(
+          metadata.soarTriggeredAt,
+          metadata.triggeredAt,
+          metadata.createdAt,
+          app.soarTriggeredAt,
+          app.triggeredAt,
+          app.createdAt,
+          req.body?.soarTriggeredAt,
+          req.body?.createdAt
+        )
+      : null;
     const esClient = req.app.get("esClient");
     const ensureIndexExists = req.app.get("ensureIndexExists") || (async () => {});
 
@@ -194,11 +298,13 @@ const uploadApp = async (req, res) => {
 
     let docId;
 
+    const blacklistEntry = getBlacklistEntry(uploadedFileHash);
+
     if (existing.hits.hits.length > 0) {
       const doc = existing.hits.hits[0];
       docId = doc._id;
-      status = doc._source.status || "unknown";
-      source = doc._source.source || "Elasticsearch";
+      status = blacklistEntry?.active ? "malicious" : (doc._source.status || "unknown");
+      source = blacklistEntry?.active ? "BlacklistDB" : (doc._source.source || "Elasticsearch");
 
       await esClient.update({
         index: getIndexName(),
@@ -210,16 +316,29 @@ const uploadApp = async (req, res) => {
             timestamp: new Date(),
             apkFilePath: newFilePath,
             apkFileName: newFileName,
-            uploadSource: "android_app",
+            uploadSource,
+            ...(blacklistEntry?.active ? {
+              status: "malicious",
+              source: "BlacklistDB",
+              blacklist: {
+                active: true,
+                reason: blacklistEntry.reason,
+                firstBlacklistedAt: blacklistEntry.firstBlacklistedAt,
+                updatedAt: blacklistEntry.lastUpdatedAt,
+                updatedBy: blacklistEntry.updatedBy,
+                source: blacklistEntry.source,
+              },
+            } : {}),
+            ...(isSoarUpload ? { soarId, soarTriggeredAt } : {}),
           },
         },
       });
 
       console.log(`✅ Updated existing app → ${safePackageName}: ${status}`);
     } else {
-      if (isHashMalicious(uploadedFileHash)) {
+      if (blacklistEntry?.active || isHashMalicious(uploadedFileHash)) {
         status = "malicious";
-        source = "SignatureDB";
+        source = blacklistEntry?.active ? "BlacklistDB" : "SignatureDB";
         console.log(`⚠️  [UPLOAD] Detected malicious app via SignatureDB: ${safePackageName}`);
       } else {
         status = "unknown";
@@ -240,9 +359,20 @@ const uploadApp = async (req, res) => {
         source: source,
         timestamp: new Date(),
         uploadedByUser: true,
+        ...(blacklistEntry?.active ? {
+          blacklist: {
+            active: true,
+            reason: blacklistEntry.reason,
+            firstBlacklistedAt: blacklistEntry.firstBlacklistedAt,
+            updatedAt: blacklistEntry.lastUpdatedAt,
+            updatedBy: blacklistEntry.updatedBy,
+            source: blacklistEntry.source,
+          },
+        } : {}),
         apkFilePath: newFilePath,
         apkFileName: newFileName,
-        uploadSource: "android_app",
+        uploadSource,
+        ...(isSoarUpload ? { soarId, soarTriggeredAt } : {}),
       };
 
       const indexResponse = await esClient.index({
@@ -437,6 +567,11 @@ const receiveAppData = async (req, res) => {
   const userResults = [];
   const systemResults = [];
 
+  const { dedupedUser, dedupedSystem } = dedupeScannedApps(userApps, systemApps);
+  console.log(
+    `🧹 Deduped scan payload - user: ${userApps.length} -> ${dedupedUser.length}, system: ${systemApps.length} -> ${dedupedSystem.length}`
+  );
+
   // OPTIMIZATION: Process apps concurrently in batches instead of sequentially
   const processingStartTime = Date.now();
 
@@ -473,17 +608,40 @@ const receiveAppData = async (req, res) => {
         query: { term: { sha256: { value: sha256 } } },
       });
 
+      const blacklistEntry = getBlacklistEntry(sha256);
+
       if (existing.hits.hits.length > 0) {
         existingDoc = existing.hits.hits[0];
         const doc = existingDoc;
         status = doc._source.status || "unknown";
         source = doc._source.source || "Elasticsearch";
         virusTotalHashCheck = doc._source.virusTotalHashCheck || null;
+        const appTypeState = resolveAppType(doc._source, appType);
 
-        const updateDoc = { timestamp: new Date(), appType };
+        const updateDoc = {
+          timestamp: new Date(),
+          appType: appTypeState.appType,
+          seenAsUserApp: appTypeState.seenAsUserApp,
+          seenAsSystemApp: appTypeState.seenAsSystemApp,
+        };
         if (device_model) updateDoc.device_model = device_model;
         if (device_id) updateDoc.device_id = device_id;
         if (scan_time) updateDoc.scan_time = scan_time;
+
+        if (blacklistEntry && blacklistEntry.active) {
+          status = "malicious";
+          source = "BlacklistDB";
+          updateDoc.status = "malicious";
+          updateDoc.source = "BlacklistDB";
+          updateDoc.blacklist = {
+            active: true,
+            reason: blacklistEntry.reason,
+            firstBlacklistedAt: blacklistEntry.firstBlacklistedAt,
+            updatedAt: blacklistEntry.lastUpdatedAt,
+            updatedBy: blacklistEntry.updatedBy,
+            source: blacklistEntry.source,
+          };
+        }
 
         await esClient.update({
           index: getIndexName(),
@@ -511,7 +669,7 @@ const receiveAppData = async (req, res) => {
           "N/A";
 
         // If old docs don't have stored VT details, perform a hash lookup once in this flow.
-        if (!Number.isFinite(existingDetectedEngines)) {
+        if (!blacklistEntry?.active && !Number.isFinite(existingDetectedEngines)) {
           const vtResult = await checkVirusTotal(sha256);
           if (vtResult && vtResult.status !== "unknown") {
             existingDetectedEngines = vtResult.detectedEngines;
@@ -533,6 +691,17 @@ const receiveAppData = async (req, res) => {
                   },
                 },
               },
+            });
+            status = vtResult.status;
+          } else {
+            // VT has no record of this hash — any previously stored status is unverified.
+            // Reset to "unknown" so the dashboard doesn't falsely display "safe".
+            status = "unknown";
+            source = "Unknown";
+            await esClient.update({
+              index: getIndexName(),
+              id: doc._id,
+              body: { doc: { status: "unknown", source: "Unknown" } },
             });
           }
         }
@@ -563,6 +732,13 @@ const receiveAppData = async (req, res) => {
           };
 
           if (!alreadyUploaded) {
+            await esClient.update({
+              index: getIndexName(),
+              id: doc._id,
+              retry_on_conflict: 3,
+              body: { doc: buildSoarPromotionDoc(doc._source) },
+            });
+
             const queued = await createAnalysisRequestFromHashCheck(esClient, {
               appName: doc._source.appName || packageName,
               packageName,
@@ -579,12 +755,19 @@ const receiveAppData = async (req, res) => {
             if (!queued) {
               uploadTrigger.reason = "already_triggered_or_uploaded";
             }
+            uploadTrigger.required = false;
+            uploadTrigger.triggerType = "soar_auto_promoted";
           }
         }
 
         console.log(`✅ Already indexed → ${packageName} (${appType}): ${status} (${source})`);
       } else {
-        if (isHashMalicious(sha256)) {
+        const appTypeState = resolveAppType({}, appType);
+        if (blacklistEntry && blacklistEntry.active) {
+          status = "malicious";
+          source = "BlacklistDB";
+          console.log(`Detected blacklisted ${appType} app: ${packageName}`);
+        } else if (isHashMalicious(sha256)) {
           status = "malicious";
           source = "SignatureDB";
           console.log(`Detected malicious ${appType} app via SignatureDB: ${packageName}`);
@@ -650,6 +833,8 @@ const receiveAppData = async (req, res) => {
 
         const dangerousPermissions = separateDangerousPermissions(permissions || []);
 
+        const shouldAutoPromoteToSoar = Number.isFinite(virusTotalHashCheck?.detectedEngines) && virusTotalHashCheck.detectedEngines >= 30;
+
         const docData = {
           appName,
           packageName,
@@ -661,7 +846,25 @@ const receiveAppData = async (req, res) => {
           timestamp: new Date(),
           uploadedByUser: uploadedByUserFlag,
           virusTotalHashCheck,
-          appType,
+          appType: appTypeState.appType,
+          seenAsUserApp: appTypeState.seenAsUserApp,
+          seenAsSystemApp: appTypeState.seenAsSystemApp,
+          ...(blacklistEntry && blacklistEntry.active ? {
+            blacklist: {
+              active: true,
+              reason: blacklistEntry.reason,
+              firstBlacklistedAt: blacklistEntry.firstBlacklistedAt,
+              updatedAt: blacklistEntry.lastUpdatedAt,
+              updatedBy: blacklistEntry.updatedBy,
+              source: blacklistEntry.source,
+            },
+          } : {}),
+          ...(shouldAutoPromoteToSoar ? {
+            soarId: generateSoarId(),
+            soarTriggeredAt: new Date().toISOString(),
+            soarRequestStatus: "pending_upload",
+            soarActionRequestedAt: new Date().toISOString(),
+          } : {}),
         };
 
         if (device_model) docData.device_model = device_model;
@@ -672,6 +875,17 @@ const receiveAppData = async (req, res) => {
           index: getIndexName(),
           document: docData,
         });
+
+        if (shouldAutoPromoteToSoar) {
+          uploadTrigger = {
+            required: false,
+            queued: false,
+            triggerType: "soar_auto_promoted",
+            threshold: 30,
+            detectedEngines: virusTotalHashCheck.detectedEngines,
+            reason: "detected_30_plus",
+          };
+        }
         console.log(`📤 Indexed (${appType} App Scan) → ${packageName} (${status})`);
       }
 
@@ -719,15 +933,15 @@ const receiveAppData = async (req, res) => {
   try {
     // Process user and system apps concurrently
     const [userResultsProcessing, systemResultsProcessing] = await Promise.all([
-      processAppsInBatches(userApps, "user"),
-      processAppsInBatches(systemApps, "system")
+      processAppsInBatches(dedupedUser, "user"),
+      processAppsInBatches(dedupedSystem, "system")
     ]);
 
     userResults.push(...userResultsProcessing);
     systemResults.push(...systemResultsProcessing);
 
     const processingTimeMs = Date.now() - processingStartTime;
-    console.log(`⏱️  Processing completed in ${processingTimeMs}ms for ${userApps.length + systemApps.length} apps`);
+    console.log(`⏱️  Processing completed in ${processingTimeMs}ms for ${dedupedUser.length + dedupedSystem.length} apps`);
     
     console.log("User Apps Results:", userResults);
     console.log("System Apps Results:", systemResults);
@@ -903,43 +1117,25 @@ const storeMLPrediction = async (req, res) => {
     const doc = searchResult.hits.hits[0];
     const docId = doc._id;
 
-    // Determine new status from ML prediction label
-    const normalizedLabel = (mlPredictionLabel || '').toUpperCase();
-    let newStatus;
-    if (normalizedLabel === 'SAFE') {
-      newStatus = 'safe';
-    } else if (normalizedLabel === 'MALICIOUS' || normalizedLabel === 'MALWARE') {
-      newStatus = 'malicious';
-    } else if (normalizedLabel === 'RISKY' || normalizedLabel === 'SUSPICIOUS') {
-      newStatus = 'suspicious';
-    } else {
-      // Threshold-based fallback using score (0–1 probability)
-      const score = parseFloat(mlPredictionScore);
-      if (score < 0.3) newStatus = 'safe';
-      else if (score < 0.6) newStatus = 'suspicious';
-      else newStatus = 'malicious';
-    }
-
+    // Store ML prediction data WITHOUT changing the status field
+    // Status should ONLY be derived from VirusTotal hash check, never from ML
     const mlPredictionData = {
       mlPredictionScore: parseFloat(mlPredictionScore),
       mlPredictionLabel: mlPredictionLabel,
-      mlAnalysisTimestamp: new Date().toISOString()
+      mlAnalysisTimestamp: new Date().toISOString(),
+      mlAnalysisDate: new Date()
     };
 
-    // Update the document with ML prediction data AND updated status
+    // Update the document with ML prediction data ONLY - DO NOT UPDATE STATUS
     await esClient.update({
       index: indexName,
       id: docId,
       body: {
-        doc: {
-          ...mlPredictionData,
-          mlAnalysisDate: new Date(),
-          status: newStatus
-        },
+        doc: mlPredictionData,
       },
     });
 
-    console.log(`🤖 ML Prediction stored for ${packageName} (Status updated: ${doc._source.status} → ${newStatus})`);
+    console.log(`🤖 ML Prediction stored for ${packageName} (Status remains: ${doc._source.status})`);
     console.log(`   Score: ${mlPredictionScore}, Label: ${mlPredictionLabel}`);
 
     res.status(200).json({
@@ -947,8 +1143,8 @@ const storeMLPrediction = async (req, res) => {
       packageName,
       mlPredictionScore,
       mlPredictionLabel,
-      previousStatus: doc._source.status,
-      currentStatus: newStatus,
+      status: doc._source.status,
+      note: "Status is not updated by ML - only VirusTotal determines status",
       timestamp: new Date().toISOString()
     });
 

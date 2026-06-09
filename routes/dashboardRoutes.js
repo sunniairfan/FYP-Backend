@@ -2,6 +2,41 @@ const express = require('express');
 const router = express.Router();
 const { esClient } = require('../elasticsearch');
 const { requireAdminSession } = require('../middleware/authAccess');
+const { getBlacklistEntry } = require('../utils/blacklistDB');
+
+const resolveDashboardAppType = (app = {}) => {
+    if (app.seenAsUserApp === true) return 'user';
+    if (app.appType === 'user') return 'user';
+    if (app.uploadedByUser === true) return 'user';
+    return 'system';
+};
+
+const dedupeDashboardApps = (apps = []) => {
+    const byKey = new Map();
+
+    for (const app of apps) {
+        const sha = String(app.sha256 || '').trim().toLowerCase();
+        const pkg = String(app.packageName || '').trim().toLowerCase();
+        const key = sha ? `sha:${sha}` : pkg ? `pkg:${pkg}` : `id:${app._id || app.id || Math.random()}`;
+        const current = byKey.get(key);
+
+        if (!current) {
+            byKey.set(key, app);
+            continue;
+        }
+
+        const currentTs = new Date(current.timestamp || current.scan_time || 0).getTime() || 0;
+        const candidateTs = new Date(app.timestamp || app.scan_time || 0).getTime() || 0;
+        const currentIsUser = resolveDashboardAppType(current) === 'user';
+        const candidateIsUser = resolveDashboardAppType(app) === 'user';
+
+        if ((candidateIsUser && !currentIsUser) || candidateTs > currentTs) {
+            byKey.set(key, app);
+        }
+    }
+
+    return Array.from(byKey.values());
+};
 
 // Helper function to get dynamic index name
 const getIndexName = () => {
@@ -48,18 +83,45 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
       }));
     });
 
-    const apps = result.hits.hits.map((hit) => {
+        const mappedApps = result.hits.hits.map((hit) => {
       const app = hit._source;
       
       // Extract VirusTotal analysis data
       const virusTotalData = app.virusTotalHashCheck || app.virusTotalAnalysis || {};
       
+      // Derive status purely from VirusTotal results
+      const vtDetectedRaw = virusTotalData.detectedEngines ?? null;
+      const vtTotalRaw    = virusTotalData.totalEngines ?? null;
+      const vtDetectedNum = vtDetectedRaw !== null && vtDetectedRaw !== '' ? Number(vtDetectedRaw) : null;
+      const vtTotalNum    = vtTotalRaw    !== null && vtTotalRaw    !== '' ? Number(vtTotalRaw)    : null;
+      // totalEngines === 0 means VT had no data for this hash (0/0) → treat as unknown
+      const vtHasRealData = Number.isFinite(vtTotalNum) && vtTotalNum > 0;
+            const vtDerivedStatus = (Number.isFinite(vtDetectedNum) && vtHasRealData)
+        ? (vtDetectedNum === 0 ? 'safe' : vtDetectedNum <= 3 ? 'suspicious' : 'malicious')
+        : 'unknown'; // When VT has no data or returns error, status must be unknown
+
+            const persistentBlacklist = getBlacklistEntry(app.sha256);
+            const isBlacklisted = app.blacklist?.active === true || (persistentBlacklist && persistentBlacklist.active);
+            const effectiveStatus = isBlacklisted ? 'malicious' : vtDerivedStatus;
+
       // Extract ML Prediction data
       const mlPredictionData = {
         mlPredictionScore: app.mlPredictionScore || null,
         mlPredictionLabel: app.mlPredictionLabel || null,
         mlAnalysisTimestamp: app.mlAnalysisTimestamp || null
       };
+      
+      // Debug logging for apps without ML data
+      if (app.packageName && (app.packageName.includes('malware') || app.packageName.includes('detector'))) {
+        console.log('🔍 DEBUG malware/detector app found:', {
+          appName: app.appName,
+          packageName: app.packageName,
+          hasScore: app.mlPredictionScore != null,
+          score: app.mlPredictionScore,
+          label: app.mlPredictionLabel,
+          vtStatus: vtDerivedStatus
+        });
+      }
       
       const mappedApp = {
         ...app,
@@ -69,7 +131,11 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
         detectionRatio: virusTotalData.detectionRatio || 'N/A',
         totalEngines: virusTotalData.totalEngines || 'N/A',
         detectedEngines: virusTotalData.detectedEngines || 'N/A',
-        scanTime: virusTotalData.scanTime || app.scanTime || null,
+        // Always prioritize device scan_time (current) over VT scanTime (historical)
+        scanTime: app.scan_time || virusTotalData.scanTime || app.scanTime || null,
+        // VT-derived status (used for display; when VT is unknown, status stays unknown regardless of ML)
+        vtDerivedStatus: effectiveStatus,
+        vtDetectionRatio: vtHasRealData ? (virusTotalData.detectionRatio || null) : null,
         // Device information
         scan_time: app.scan_time || null,
         device_id: app.device_id || null,
@@ -78,15 +144,38 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
         mlPredictionScore: mlPredictionData.mlPredictionScore,
         mlPredictionLabel: mlPredictionData.mlPredictionLabel,
         mlAnalysisTimestamp: mlPredictionData.mlAnalysisTimestamp,
-        // Ensure status is never "NOT FOUND" or "not_found" - convert to "unknown"
-        status: (app.status === 'NOT FOUND' || app.status === 'not_found') ? 'unknown' : (app.status || 'unknown'),
-        // Default to 'system' if appType is not defined (for backward compatibility)
-        appType: app.appType || 'system'
+        // STATUS IS ONLY DERIVED FROM VIRUSTOTAL HASH CHECK - NEVER FROM ML OR OTHER SOURCES
+        // This ensures the frontend always receives status based purely on VirusTotal verification
+                status: effectiveStatus,
+                // Keep app type stable: if app was ever seen as user app, render as user.
+                appType: resolveDashboardAppType(app),
+                blacklist: isBlacklisted
+                    ? {
+                            ...(app.blacklist || {}),
+                            active: true,
+                            reason: app.blacklist?.reason || persistentBlacklist?.reason || 'Blacklisted hash',
+                            source: app.blacklist?.source || persistentBlacklist?.source || 'BlacklistDB',
+                            firstBlacklistedAt: app.blacklist?.firstBlacklistedAt || persistentBlacklist?.firstBlacklistedAt || null,
+                            updatedAt: app.blacklist?.updatedAt || persistentBlacklist?.lastUpdatedAt || null,
+                            updatedBy: app.blacklist?.updatedBy || persistentBlacklist?.updatedBy || null,
+                        }
+                    : app.blacklist,
       };
+
+      // Strip large/raw MobSF sub-fields that are not needed for the dashboard card
+      // and can contain special characters (like [android:exported=true]) that break
+      // HTML attribute encoding when embedded in onclick JSON.
+      if (mappedApp.dynamicAnalysis) {
+        delete mappedApp.dynamicAnalysis.raw_report;
+        delete mappedApp.dynamicAnalysis.api_monitor;
+        delete mappedApp.dynamicAnalysis.frida_logs;
+      }
       
       return mappedApp;
     });
     
+    const apps = dedupeDashboardApps(mappedApps);
+
     console.log('🔍 AFTER MAPPING - First 3 mapped apps:');
     apps.slice(0, 3).forEach((app, idx) => {
       console.log(`   App ${idx}:`, JSON.stringify({
@@ -97,6 +186,8 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
         status: app.status
       }));
     });
+
+    console.log(`🧹 Dashboard dedupe: ${mappedApps.length} -> ${apps.length}`);
 
     // Debug: Log all apps and their appType
     console.log('📊 DEBUG - All apps count:', apps.length);
@@ -300,6 +391,17 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             padding: 0;
             width: 100%;
             transition: margin-left 0.3s ease;
+            overflow-x: auto;
+        }
+
+        .apps-section {
+            overflow-x: auto;
+            width: 100%;
+        }
+
+        .table-container {
+            min-width: 100%;
+            overflow-x: auto;
         }
 
         .sidebar.open ~ .main-content {
@@ -1083,6 +1185,20 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             color: var(--theme-text);
         }
 
+
+        .blacklist-chip {
+            display: inline-block;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #fecaca;
+            background: #7f1d1d;
+            border: 1px solid #b91c1c;
+            border-radius: 999px;
+            padding: 3px 8px;
+            margin-bottom: 6px;
+        }
         .detail-label,
         .notification-message,
         .nav-section-title,
@@ -1283,12 +1399,20 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                 </div>
             </div>
 
+            <!-- VirusTotal Report Button -->
+            <div style="text-align: center; margin: 20px 0;">
+                <button onclick="window.location.href='/dashboard/virustotal-report'" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 30px; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4); transition: all 0.3s ease;">
+                    <i class="fas fa-shield-virus" style="margin-right: 8px;"></i> View Detailed VirusTotal Report
+                </button>
+            </div>
+
             ${apps.length > 0 ? `
+                <div class="table-container" style="overflow-x: auto; width: 100%;">
                 <div class="table-header">
                     <div>APP DETAILS</div>
                     <div>PACKAGE INFO</div>
                     <div>FILE INFORMATION</div>
-                    <div>STATUS & ANALYSIS</div>
+                    <div>THREAT INTEL RESULTS</div>
                     <div>ACTIONS</div>
                 </div>
                 <div class="app-list" id="appList">
@@ -1296,6 +1420,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                         <div class="app-row user-app" data-app-type="user" data-device-id="${escapeHtmlAttr(app.device_id || '')}">
                             <div>
                                 <div class="app-name">${app.appName || 'Unknown'}</div>
+                                ${app.blacklist?.active ? `<div class="blacklist-chip">Blacklisted${app.blacklist.firstBlacklistedAt ? ` since ${new Date(app.blacklist.firstBlacklistedAt).toLocaleDateString()}` : ''}</div>` : ''}
                                 <div class="app-meta">Uploaded: ${new Date(app.uploadedAt || app.timestamp).toLocaleDateString()}</div>
                             </div>
                             <div>
@@ -1307,16 +1432,21 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                                 <div class="app-meta">Hash: ${app.sha256 ? app.sha256.substring(0, 16) + '...' : 'N/A'}</div>
                             </div>
                                                         <div class="status-analysis-cell">
-                                <span class="status-badge status-${app.uploadedByUser ? 'uploaded' : (app.status?.toLowerCase() || 'unknown')}">${app.uploadedByUser ? 'Uploaded' : (app.status || 'Unknown')}</span>
-                                <div class="app-meta" style="margin-top: 5px;">Score: ${app.mobsfAnalysis?.security_score || app.virusTotalHashCheck?.detectionRatio || app.virusTotalAnalysis?.detectionRatio || 'N/A'}</div>
-                                ${app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe' ? `
-                                                                    <div class="ml-model-badge">
-                                    🤖 ML Model: ${app.mlPredictionLabel} (${(app.mlPredictionScore ?? 0).toFixed(3)})
-                                  </div>
-                                ` : ""}
+                                ${(() => {
+                                  // Display status based on VT-derived status, falling back to app.status
+                                  // When VT is unknown, this ensures we show "unknown" even if ML has a prediction
+                                  const displayStatus = app.vtDerivedStatus || app.status?.toLowerCase() || 'unknown';
+                                  const displayLabel = displayStatus.charAt(0).toUpperCase() + displayStatus.slice(1);
+                                  const vtScore = app.vtDetectionRatio || 'N/A';
+                                  // Show ML badge when status is not safe (including unknown - to help SOC analysts)
+                                  const showML = app.mlPredictionScore != null && displayStatus !== 'safe';
+                                  return `<span class="status-badge status-${displayStatus}">${displayLabel}</span>
+                                <div class="app-meta" style="margin-top: 5px;">Score: ${vtScore}</div>
+                                ${showML ? `<div class="ml-model-badge">🤖 ML Model: ${app.mlPredictionLabel?.toUpperCase() || 'N/A'} (${(app.mlPredictionScore ?? 0).toFixed(3)})</div>` : ''}`;
+                                })()}
                             </div>
                             <div class="actions">
-                                <button class="view-btn" onclick='showDetails(${JSON.stringify(app).replace(/'/g, "\\'")})'>View Details</button>
+                                <button class="view-btn" onclick='showDetails(${JSON.stringify(app).replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/</g,'\u003c').replace(/>/g,'\u003e')})'>View Details</button>
                                 <div class="delete-icon" onclick="deleteApp('${app._id}')">
                                     <i class="fas fa-trash-alt"></i>
                                 </div>
@@ -1327,6 +1457,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                         <div class="app-row system-app hidden" data-app-type="system" data-device-id="${escapeHtmlAttr(app.device_id || '')}">
                             <div>
                                 <div class="app-name">${app.appName || 'Unknown'}</div>
+                                ${app.blacklist?.active ? `<div class="blacklist-chip">Blacklisted${app.blacklist.firstBlacklistedAt ? ` since ${new Date(app.blacklist.firstBlacklistedAt).toLocaleDateString()}` : ''}</div>` : ''}
                                 <div class="app-meta">Uploaded: ${new Date(app.uploadedAt || app.timestamp).toLocaleDateString()}</div>
                             </div>
                             <div>
@@ -1337,23 +1468,29 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                                 <div class="app-meta">Size: ${app.sizeMB ? app.sizeMB.toFixed(2) + ' MB' : (app.fileSize ? (app.fileSize / (1024 * 1024)).toFixed(2) + ' MB' : 'N/A')}</div>
                                 <div class="app-meta">Hash: ${app.sha256 ? app.sha256.substring(0, 16) + '...' : 'N/A'}</div>
                             </div>
-                                                        <div class="status-analysis-cell">
-                                <span class="status-badge status-${app.uploadedByUser ? 'uploaded' : (app.status?.toLowerCase() || 'unknown')}">${app.uploadedByUser ? 'Uploaded' : (app.status || 'Unknown')}</span>
-                                <div class="app-meta" style="margin-top: 5px;">Score: ${app.mobsfAnalysis?.security_score || app.virusTotalHashCheck?.detectionRatio || app.virusTotalAnalysis?.detectionRatio || 'N/A'}</div>
-                                ${app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe' ? `
-                                                                    <div class="ml-model-badge">
-                                    🤖 ML Model: ${app.mlPredictionLabel} (${(app.mlPredictionScore ?? 0).toFixed(3)})
-                                  </div>
-                                ` : ""}
+                            <div class="status-analysis-cell">
+                                ${(() => {
+                                  // Display status based on VT-derived status, falling back to app.status
+                                  // When VT is unknown, this ensures we show "unknown" even if ML has a prediction
+                                  const displayStatus = app.vtDerivedStatus || app.status?.toLowerCase() || 'unknown';
+                                  const displayLabel = displayStatus.charAt(0).toUpperCase() + displayStatus.slice(1);
+                                  const vtScore = app.vtDetectionRatio || 'N/A';
+                                  // Show ML badge when status is not safe (including unknown - to help SOC analysts)
+                                  const showML = app.mlPredictionScore != null && displayStatus !== 'safe';
+                                  return `<span class="status-badge status-${displayStatus}">${displayLabel}</span>
+                                <div class="app-meta" style="margin-top: 5px;">Score: ${vtScore}</div>
+                                ${showML ? `<div class="ml-model-badge">🤖 ML Model: ${app.mlPredictionLabel?.toUpperCase() || 'N/A'} (${(app.mlPredictionScore ?? 0).toFixed(3)})</div>` : ''}`;
+                                })()}
                             </div>
                             <div class="actions">
-                                <button class="view-btn" onclick='showDetails(${JSON.stringify(app).replace(/'/g, "\\'")})'>View Details</button>
+                                <button class="view-btn" onclick='showDetails(${JSON.stringify(app).replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/</g,'\u003c').replace(/>/g,'\u003e')})'>View Details</button>
                                 <div class="delete-icon" onclick="deleteApp('${app._id}')">
                                     <i class="fas fa-trash-alt"></i>
                                 </div>
                             </div>
                         </div>
                     `).join('')}
+                </div>
                 </div>
             ` : `
                 <div class="no-data">
@@ -1580,34 +1717,34 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             let html = '<div style="display: grid; gap: 15px;">';
             
             // Basic App Information
-            html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-bottom: 10px;">Basic Information</h3>';
+            html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-bottom: 10px;">BASIC INFORMATION</h3>';
             html += '<div class="detail-row"><div class="detail-label">App Name:</div><div class="detail-value">' + (app.appName || 'N/A') + '</div></div>';
             html += '<div class="detail-row"><div class="detail-label">Package Name:</div><div class="detail-value">' + (app.packageName || 'N/A') + '</div></div>';
             html += '<div class="detail-row"><div class="detail-label">App Type:</div><div class="detail-value">' + (app.appType || 'N/A') + '</div></div>';
             html += '<div class="detail-row"><div class="detail-label">Size:</div><div class="detail-value">' + (app.fileSize ? (app.fileSize / (1024 * 1024)).toFixed(2) + ' MB' : (app.sizeMB ? app.sizeMB.toFixed(2) + ' MB' : 'N/A')) + '</div></div>';
-            html += '<div class="detail-row"><div class="detail-label">Source:</div><div class="detail-value">' + (app.source || app.uploadSource || 'N/A') + '</div></div>';
-            html += '<div class="detail-row"><div class="detail-label">Uploaded By User:</div><div class="detail-value">' + (app.uploadedByUser ? 'Yes' : 'No') + '</div></div>';
-            html += '<div class="detail-row"><div class="detail-label">Upload ID:</div><div class="detail-value">' + (app.uploadId || 'N/A') + '</div></div>';
-            
-            // File Hashes
-            html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">File Hashes</h3>';
             html += '<div class="detail-row"><div class="detail-label">SHA-256:</div><div class="detail-value" style="word-break: break-all; font-family: monospace; font-size: 11px;">' + (app.sha256 || 'N/A') + '</div></div>';
+            html += '<div class="detail-row"><div class="detail-label">Uploaded By User:</div><div class="detail-value">' + (app.uploadedByUser ? 'Yes' : 'No') + '</div></div>';
+            if (app.uploadedByUser && app.uploadId) {
+                html += '<div class="detail-row"><div class="detail-label">Upload ID:</div><div class="detail-value">' + (app.uploadId || 'N/A') + '</div></div>';
+            }
 
             if (app.device_id || app.device_model || app.scan_time) {
-                html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">Device Context</h3>';
                 html += '<div class="detail-row"><div class="detail-label">Device ID:</div><div class="detail-value">' + (app.device_id || 'N/A') + '</div></div>';
                 html += '<div class="detail-row"><div class="detail-label">Device Model:</div><div class="detail-value">' + (app.device_model || 'N/A') + '</div></div>';
                 html += '<div class="detail-row"><div class="detail-label">Device Scan Time:</div><div class="detail-value">' + formatDate(app.scan_time) + '</div></div>';
             }
             
-            // Status Information
-            html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">Security Status</h3>';
-            const displayStatus = app.uploadedByUser ? 'Uploaded' : (app.status || 'Unknown');
-            const statusClass = app.uploadedByUser ? 'uploaded' : (app.status?.toLowerCase() || 'unknown');
+            // Threat Intelligence Results — always derived from VirusTotal results
+            html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">THREAT INTELLIGENCE RESULTS</h3>';
+            const vtStatusDerived = app.vtDerivedStatus || app.status?.toLowerCase() || 'unknown';
+            const displayStatus = vtStatusDerived.charAt(0).toUpperCase() + vtStatusDerived.slice(1);
+            const statusClass = vtStatusDerived;
             html += '<div class="detail-row"><div class="detail-label">Overall Status:</div><div class="detail-value"><span class="status-badge status-' + statusClass + '">' + displayStatus + '</span></div></div>';
             
-            // Multi-Engine Analysis (VirusTotal)
-            if (hasVtData) {
+            // VirusTotal Hash Check results
+            // Always prioritize device scan_time (current) over old VT scan times (historical)
+            const effectiveScanTime = app.scan_time || app.scanTime;
+            if (hasVtData || vtStatusDerived === 'unknown') {
                 const malCount   = vtData.maliciousCount   ?? null;
                 const suspCount  = vtData.suspiciousCount  ?? null;
                 const harmCount  = vtData.harmlessCount    ?? null;
@@ -1615,14 +1752,15 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                 const scoreColor = (detectedEngines !== null && totalEngines !== null && totalEngines > 0)
                     ? (detectedEngines === 0 ? '#10b981' : detectedEngines <= 2 ? '#f59e0b' : '#ef4444')
                     : '#94a3b8';
-                html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">Multi-Engine Analysis</h3>';
-                html += '<div class="detail-row"><div class="detail-label">Detection Ratio:</div><div class="detail-value"><strong style="font-size:16px;color:' + scoreColor + ';">' + (vtData.detectionRatio || app.detectionRatio || 'N/A') + '</strong></div></div>';
-                if (malCount !== null)   html += '<div class="detail-row"><div class="detail-label">Malicious Engines:</div><div class="detail-value" style="color:' + (malCount > 0 ? '#ef4444' : '#10b981') + ';">' + malCount + '</div></div>';
-                if (suspCount !== null)  html += '<div class="detail-row"><div class="detail-label">Suspicious Engines:</div><div class="detail-value" style="color:' + (suspCount > 0 ? '#f59e0b' : '#10b981') + ';">' + suspCount + '</div></div>';
-                if (harmCount !== null)  html += '<div class="detail-row"><div class="detail-label">Clean / Harmless:</div><div class="detail-value" style="color:#10b981;">' + harmCount + '</div></div>';
-                if (undetCount !== null) html += '<div class="detail-row"><div class="detail-label">Undetected:</div><div class="detail-value" style="color:#94a3b8;">' + undetCount + '</div></div>';
-                html += '<div class="detail-row"><div class="detail-label">Total Engines:</div><div class="detail-value">' + (vtData.totalEngines || app.totalEngines || 'N/A') + '</div></div>';
-                html += '<div class="detail-row"><div class="detail-label">Scan Time:</div><div class="detail-value">' + formatDate(vtData.scanTime || app.scanTime) + '</div></div>';
+                html += '<div class="detail-row"><div class="detail-label">Detection Ratio:</div><div class="detail-value"><strong style="font-size:16px;color:' + scoreColor + ';">' + (vtStatusDerived === 'unknown' ? 'Unknown' : (vtData.detectionRatio || app.detectionRatio || 'N/A')) + '</strong></div></div>';
+                if (vtStatusDerived !== 'unknown') {
+                    if (malCount !== null)   html += '<div class="detail-row"><div class="detail-label">Malicious Engines:</div><div class="detail-value" style="color:' + (malCount > 0 ? '#ef4444' : '#10b981') + ';">' + malCount + '</div></div>';
+                    if (suspCount !== null)  html += '<div class="detail-row"><div class="detail-label">Suspicious Engines:</div><div class="detail-value" style="color:' + (suspCount > 0 ? '#f59e0b' : '#10b981') + ';">' + suspCount + '</div></div>';
+                    if (harmCount !== null)  html += '<div class="detail-row"><div class="detail-label">Clean / Harmless:</div><div class="detail-value" style="color:#10b981;">' + harmCount + '</div></div>';
+                    if (undetCount !== null) html += '<div class="detail-row"><div class="detail-label">Undetected:</div><div class="detail-value" style="color:#94a3b8;">' + undetCount + '</div></div>';
+                    html += '<div class="detail-row"><div class="detail-label">Total Engines:</div><div class="detail-value">' + (vtData.totalEngines || app.totalEngines || 'N/A') + '</div></div>';
+                }
+                html += '<div class="detail-row"><div class="detail-label">Scan Time:</div><div class="detail-value">' + formatDate(effectiveScanTime) + '</div></div>';
             }
 
             // Static Analysis (MobSF)
@@ -1707,12 +1845,10 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
 
             // ML Prediction Analysis (only shown for non-safe apps)
             if (app.mlPredictionScore !== undefined && app.mlPredictionScore !== null && app.status !== 'safe') {
-                html += '<h3 style="color: #6366f1; border-bottom: 1px solid #4f46e5; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">🤖 Machine Learning Model</h3>';
-                html += '<div class="detail-row"><div class="detail-label">Prediction Label:</div><div class="detail-value"><strong style="color: #6366f1; font-size: 16px;">' + (app.mlPredictionLabel || 'N/A') + '</strong></div></div>';
+                html += '<h3 style="color: #6366f1; border-bottom: 1px solid #4f46e5; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">🤖 MACHINE LEARNING MODEL</h3>';
+                html += '<div class="detail-row"><div class="detail-label">Prediction Label:</div><div class="detail-value"><strong style="color: #6366f1; font-size: 16px;">' + (app.mlPredictionLabel || 'N/A').toUpperCase() + '</strong></div></div>';
                 html += '<div class="detail-row"><div class="detail-label">ML Score:</div><div class="detail-value"><strong style="color: #6366f1; font-size: 18px;">' + (app.mlPredictionScore ?? 0).toFixed(3) + '</strong></div></div>';
-                if (app.mlAnalysisTimestamp) {
-                    html += '<div class="detail-row"><div class="detail-label">Analysis Time:</div><div class="detail-value">' + formatDate(app.mlAnalysisTimestamp) + '</div></div>';
-                }
+                html += '<div class="detail-row"><div class="detail-label">Analysis Time:</div><div class="detail-value">' + formatDate(app.mlAnalysisTimestamp || app.mlAnalysisDate) + '</div></div>';
             }
             
             // Dangerous Permissions from original data (if not covered by MobSF)
@@ -1740,11 +1876,10 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                 }
             }
             
-            // Timestamps
-            html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">Timestamps</h3>';
-            html += '<div class="detail-row"><div class="detail-label">Uploaded:</div><div class="detail-value">' + formatDate(app.uploadedAt || app.timestamp) + '</div></div>';
-            if (app.scanTime) {
-                html += '<div class="detail-row"><div class="detail-label">Scan Time:</div><div class="detail-value">' + formatDate(app.scanTime) + '</div></div>';
+            // Timestamps - Only show Uploaded for user-uploaded apps
+            if (app.uploadedByUser || app.uploadSource === 'SOAR' || app.source === 'admin_upload') {
+                html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">TIMESTAMPS</h3>';
+                html += '<div class="detail-row"><div class="detail-label">Uploaded:</div><div class="detail-value">' + formatDate(app.uploadedAt || app.timestamp) + '</div></div>';
             }
             
             html += '</div>';
@@ -1929,6 +2064,447 @@ router.delete('/delete-app/:id', requireAdminSession, async (req, res) => {
       success: false,
       error: 'Failed to delete app: ' + err.message 
     });
+  }
+});
+
+// VirusTotal Detailed Report
+router.get("/virustotal-report", requireAdminSession, async (req, res) => {
+  try {
+    const { esClient } = req.app.settings;
+    const today = new Date();
+    const day = String(today.getDate()).padStart(2, "0");
+    const month = String(today.getMonth() + 1).padStart(2, "0");
+    const year = today.getFullYear();
+    const indexName = `mobile_apps_${day}-${month}-${year}`;
+
+    // Fetch all apps from today's index
+    const result = await esClient.search({
+      index: indexName,
+      size: 1000,
+      query: { match_all: {} }
+    });
+
+    const apps = result.hits.hits.map(hit => ({
+      ...hit._source,
+      _id: hit._id
+    }));
+
+    // Calculate statistics
+    const totalApps = apps.length;
+    const scannedApps = apps.filter(app => {
+      const vtData = app.virusTotalHashCheck || app.virusTotalAnalysis || {};
+      return vtData.totalEngines > 0;
+    });
+    
+    const safeApps = apps.filter(app => app.status === 'safe');
+    const maliciousApps = apps.filter(app => app.status === 'malicious');
+    const suspiciousApps = apps.filter(app => app.status === 'suspicious');
+    const unknownApps = apps.filter(app => app.status === 'unknown' || !app.status);
+
+    // Group apps by detection count
+    const appsWithDetections = apps.filter(app => {
+      const vtData = app.virusTotalHashCheck || app.virusTotalAnalysis || {};
+      return (vtData.detectedEngines || 0) > 0;
+    }).sort((a, b) => {
+      const aDetected = (a.virusTotalHashCheck || a.virusTotalAnalysis || {}).detectedEngines || 0;
+      const bDetected = (b.virusTotalHashCheck || b.virusTotalAnalysis || {}).detectedEngines || 0;
+      return bDetected - aDetected;
+    });
+
+    res.send(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>VirusTotal Analysis Report</title>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+        <style>
+          * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+          }
+          body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            color: #e2e8f0;
+            min-height: 100vh;
+            padding: 20px;
+                        overflow-x: hidden;
+          }
+          .container {
+            max-width: 1400px;
+            margin: 0 auto;
+                        width: 100%;
+          }
+          .header {
+            text-align: center;
+            padding: 30px 0;
+            border-bottom: 2px solid #667eea;
+            margin-bottom: 30px;
+          }
+          .header h1 {
+            font-size: 36px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+          }
+          .header p {
+            color: #94a3b8;
+            font-size: 16px;
+          }
+          .back-btn {
+            display: inline-block;
+            margin-bottom: 20px;
+            padding: 10px 20px;
+            background: #1e293b;
+            color: #60a5fa;
+            text-decoration: none;
+            border-radius: 6px;
+            transition: all 0.3s;
+          }
+          .back-btn:hover {
+            background: #334155;
+            transform: translateY(-2px);
+          }
+          .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+          }
+          .stat-card {
+            background: #1e293b;
+            padding: 25px;
+            border-radius: 12px;
+            border-left: 4px solid;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+          }
+          .stat-card.total { border-color: #60a5fa; }
+          .stat-card.scanned { border-color: #8b5cf6; }
+          .stat-card.safe { border-color: #10b981; }
+          .stat-card.malicious { border-color: #ef4444; }
+          .stat-card.suspicious { border-color: #f59e0b; }
+          .stat-card.unknown { border-color: #94a3b8; }
+          .stat-label {
+            color: #94a3b8;
+            font-size: 14px;
+            margin-bottom: 10px;
+          }
+          .stat-value {
+            font-size: 32px;
+            font-weight: bold;
+          }
+          .section {
+            background: #1e293b;
+            padding: 30px;
+            border-radius: 12px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+                        overflow: hidden;
+          }
+          .section-title {
+            font-size: 24px;
+            color: #60a5fa;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+          }
+                    .table-wrapper {
+                        width: 100%;
+                        max-width: 100%;
+                        overflow-x: auto;
+                        overflow-y: hidden;
+                        border: 1px solid #334155;
+                        border-radius: 10px;
+                        margin-top: 16px;
+                    }
+          .apps-table {
+            width: 100%;
+            border-collapse: collapse;
+                        margin-top: 0;
+                        min-width: 980px;
+          }
+          .apps-table th {
+            background: #334155;
+            padding: 15px;
+            text-align: left;
+            color: #60a5fa;
+            font-weight: 600;
+            border-bottom: 2px solid #475569;
+          }
+          .apps-table td {
+            padding: 15px;
+            border-bottom: 1px solid #334155;
+                        vertical-align: top;
+          }
+          .apps-table tr:hover {
+            background: #334155;
+          }
+          .status-badge {
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            display: inline-block;
+          }
+          .status-safe { background: #065f46; color: #10b981; }
+          .status-malicious { background: #7f1d1d; color: #ef4444; }
+          .status-suspicious { background: #78350f; color: #f59e0b; }
+          .status-unknown { background: #374151; color: #94a3b8; }
+          .detection-ratio {
+            font-weight: bold;
+            font-size: 16px;
+          }
+          .detection-high { color: #ef4444; }
+          .detection-medium { color: #f59e0b; }
+          .detection-low { color: #10b981; }
+          .vt-link {
+            color: #60a5fa;
+            text-decoration: none;
+            font-size: 12px;
+          }
+          .vt-link:hover {
+            text-decoration: underline;
+          }
+                    .mono-cell {
+                        font-family: monospace;
+                        font-size: 12px;
+                        max-width: 360px;
+                        white-space: normal;
+                        overflow-wrap: anywhere;
+                        word-break: break-word;
+                    }
+                    .hash-cell {
+                        font-family: monospace;
+                        font-size: 10px;
+                        max-width: 230px;
+                        white-space: normal;
+                        overflow-wrap: anywhere;
+                        word-break: break-all;
+                    }
+          .no-data {
+            text-align: center;
+            color: #64748b;
+            padding: 40px;
+            font-size: 18px;
+          }
+          .summary-box {
+            background: #334155;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+          }
+          .summary-box h4 {
+            color: #60a5fa;
+            margin-bottom: 15px;
+          }
+          .summary-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #475569;
+          }
+          .summary-item:last-child {
+            border-bottom: none;
+          }
+          .print-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-left: 10px;
+          }
+          @media print {
+            body { background: white; color: black; }
+            .back-btn, .print-btn { display: none; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
+          <button onclick="window.print()" class="print-btn"><i class="fas fa-print"></i> Print Report</button>
+          
+          <div class="header">
+            <h1><i class="fas fa-shield-virus"></i> VirusTotal Threat Intelligence Report</h1>
+            <p>Generated on ${new Date().toLocaleString()} | Analysis Date: ${day}/${month}/${year}</p>
+          </div>
+
+          <div class="stats-grid">
+            <div class="stat-card total">
+              <div class="stat-label">Total Applications</div>
+              <div class="stat-value">${totalApps}</div>
+            </div>
+            <div class="stat-card scanned">
+              <div class="stat-label">Scanned by VT</div>
+              <div class="stat-value">${scannedApps.length}</div>
+            </div>
+            <div class="stat-card safe">
+              <div class="stat-label">Safe</div>
+              <div class="stat-value">${safeApps.length}</div>
+            </div>
+            <div class="stat-card malicious">
+              <div class="stat-label">Malicious</div>
+              <div class="stat-value">${maliciousApps.length}</div>
+            </div>
+            <div class="stat-card suspicious">
+              <div class="stat-label">Suspicious</div>
+              <div class="stat-value">${suspiciousApps.length}</div>
+            </div>
+            <div class="stat-card unknown">
+              <div class="stat-label">Unknown</div>
+              <div class="stat-value">${unknownApps.length}</div>
+            </div>
+          </div>
+
+          ${appsWithDetections.length > 0 ? `
+            <div class="section">
+              <div class="section-title">
+                <i class="fas fa-exclamation-triangle"></i> Applications with Threat Detections
+              </div>
+                            <div class="table-wrapper">
+                            <table class="apps-table">
+                <thead>
+                  <tr>
+                    <th>Application Name</th>
+                    <th>Package Name</th>
+                    <th>Detection Ratio</th>
+                    <th>Status</th>
+                    <th>Scan Time</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${appsWithDetections.map(app => {
+                    const vtData = app.virusTotalHashCheck || app.virusTotalAnalysis || {};
+                    const detected = vtData.detectedEngines || 0;
+                    const total = vtData.totalEngines || 0;
+                    const ratio = total > 0 ? `${detected}/${total}` : 'N/A';
+                    const ratioClass = detected === 0 ? 'detection-low' : detected < 4 ? 'detection-medium' : 'detection-high';
+                    // Always use device scan_time (current) over vtData.scanTime (historical)
+                    const scanTime = app.scan_time || app.scanTime || vtData.scanTime;
+                    const formattedTime = scanTime ? new Date(scanTime).toLocaleString() : 'N/A';
+                    const vtUrl = app.sha256 ? `https://www.virustotal.com/gui/file/${app.sha256}` : '#';
+                    
+                    return `
+                      <tr>
+                        <td><strong>${app.appName || 'Unknown'}</strong></td>
+                                                <td class="mono-cell">${app.packageName || 'N/A'}</td>
+                        <td><span class="detection-ratio ${ratioClass}">${ratio}</span></td>
+                        <td><span class="status-badge status-${app.status || 'unknown'}">${(app.status || 'unknown').toUpperCase()}</span></td>
+                        <td>${formattedTime}</td>
+                        <td>${app.sha256 ? `<a href="${vtUrl}" target="_blank" class="vt-link"><i class="fas fa-external-link-alt"></i> View on VT</a>` : 'No hash'}</td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+                            </div>
+            </div>
+          ` : ''}
+
+          <div class="section">
+            <div class="section-title">
+              <i class="fas fa-list"></i> All Applications Report
+            </div>
+            ${apps.length > 0 ? `
+                            <div class="table-wrapper">
+                            <table class="apps-table">
+                <thead>
+                  <tr>
+                    <th>Application Name</th>
+                    <th>Package Name</th>
+                    <th>Detection Ratio</th>
+                    <th>Status</th>
+                    <th>Scan Time</th>
+                    <th>Hash</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${apps.map(app => {
+                    const vtData = app.virusTotalHashCheck || app.virusTotalAnalysis || {};
+                    const detected = vtData.detectedEngines || 0;
+                    const total = vtData.totalEngines || 0;
+                    const ratio = total > 0 ? `${detected}/${total}` : 'Unknown';
+                    const ratioClass = detected === 0 ? 'detection-low' : detected < 4 ? 'detection-medium' : 'detection-high';
+                    // Always use device scan_time (current) over vtData.scanTime (historical)
+                    const scanTime = app.scan_time || app.scanTime || vtData.scanTime;
+                    const formattedTime = scanTime ? new Date(scanTime).toLocaleString() : 'N/A';
+                    
+                    return `
+                      <tr>
+                        <td><strong>${app.appName || 'Unknown'}</strong></td>
+                                                <td class="mono-cell">${app.packageName || 'N/A'}</td>
+                        <td><span class="detection-ratio ${ratioClass}">${ratio}</span></td>
+                        <td><span class="status-badge status-${app.status || 'unknown'}">${(app.status || 'unknown').toUpperCase()}</span></td>
+                        <td>${formattedTime}</td>
+                                                <td class="hash-cell">${app.sha256 ? app.sha256 : 'N/A'}</td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+                            </div>
+            ` : '<div class="no-data">No applications found for today</div>'}
+          </div>
+
+          <div class="section">
+            <div class="section-title">
+              <i class="fas fa-chart-bar"></i> Analysis Summary
+            </div>
+            <div class="summary-box">
+              <h4>Detection Coverage</h4>
+              <div class="summary-item">
+                <span>Apps Scanned by VirusTotal:</span>
+                <strong>${scannedApps.length} / ${totalApps} (${totalApps > 0 ? ((scannedApps.length / totalApps) * 100).toFixed(1) : 0}%)</strong>
+              </div>
+              <div class="summary-item">
+                <span>Apps with Detections:</span>
+                <strong style="color: #ef4444;">${appsWithDetections.length}</strong>
+              </div>
+              <div class="summary-item">
+                <span>Clean Apps:</span>
+                <strong style="color: #10b981;">${safeApps.length}</strong>
+              </div>
+              <div class="summary-item">
+                <span>Pending Analysis:</span>
+                <strong style="color: #94a3b8;">${unknownApps.length}</strong>
+              </div>
+            </div>
+            <div class="summary-box" style="margin-top: 20px;">
+              <h4>About This Report</h4>
+              <p style="color: #94a3b8; line-height: 1.6;">
+                This report provides a comprehensive analysis of all applications scanned using VirusTotal's threat intelligence platform. 
+                VirusTotal aggregates results from ${scannedApps.length > 0 ? (scannedApps[0].virusTotalHashCheck?.totalEngines || '60+') : '65+'} antivirus engines and security tools to provide 
+                multi-engine detection capabilities. Each application's hash (SHA-256) is checked against VirusTotal's database to identify 
+                known malware, suspicious patterns, and security threats.
+              </p>
+            </div>
+          </div>
+        </div>
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    console.error('Error generating VT report:', err);
+    res.status(500).send(`
+      <html>
+        <body style="background: #0f172a; color: white; font-family: Arial; text-align: center; padding: 50px;">
+          <h1>Error Generating Report</h1>
+          <p style="color: #94a3b8;">${err.message}</p>
+          <a href="/dashboard" style="color: #60a5fa;">← Back to Dashboard</a>
+        </body>
+      </html>
+    `);
   }
 });
 

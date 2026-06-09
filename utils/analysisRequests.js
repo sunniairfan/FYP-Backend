@@ -14,6 +14,9 @@ const getTodayAppsIndexName = () => {
   return `mobile_apps_${day}-${month}-${year}`;
 };
 
+const APPS_INDEX_PATTERN = "mobile_apps_*";
+const REQUESTS_INDEX_PATTERN = "analysis_requests_*";
+
 const parseDetectionRatioNumerator = (ratio) => {
   if (!ratio || typeof ratio !== "string") {
     return null;
@@ -41,42 +44,116 @@ const getHashCheckDetectedFromDoc = (doc) => {
 };
 
 const isAlreadyUploadedFromDoc = (doc) => {
-  return Boolean(doc?.apkFilePath) || doc?.uploadSource === "android_app";
+  return Boolean(doc?.apkFilePath) || Boolean(doc?.apkFileName) || Boolean(doc?.uploadId);
 };
 
-const hasUploadedApkForPackage = async (esClient, sourceIndex, packageName) => {
-  if (!esClient || !sourceIndex || !packageName) {
+const hasUploadedApkForPackage = async (esClient, sourceIndex, packageName, sha256) => {
+  if (!esClient || (!packageName && !sha256)) {
+    return false;
+  }
+
+  try {
+    const identityShould = [];
+    if (packageName) {
+      identityShould.push({ term: { packageName: { value: packageName } } });
+    }
+    if (sha256) {
+      identityShould.push({ term: { sha256: { value: sha256 } } });
+    }
+
+    const candidateIndices = Array.from(
+      new Set([sourceIndex, getTodayAppsIndexName(), APPS_INDEX_PATTERN].filter(Boolean))
+    );
+
+    for (const idx of candidateIndices) {
+      try {
+        const result = await esClient.search({
+          index: idx,
+          size: 1,
+          query: {
+            bool: {
+              filter: [
+                {
+                  bool: {
+                    should: identityShould,
+                    minimum_should_match: 1,
+                  },
+                },
+                {
+                  bool: {
+                    should: [
+                      { exists: { field: "apkFilePath" } },
+                      { exists: { field: "apkFileName" } },
+                      { exists: { field: "uploadId" } },
+                    ],
+                    minimum_should_match: 1,
+                  },
+                },
+              ],
+            },
+          },
+        });
+
+        if ((result.hits?.hits || []).length > 0) {
+          return true;
+        }
+      } catch (err) {
+        if (err?.meta?.statusCode !== 404) {
+          console.error(
+            `[ANALYSIS REQUEST] Uploaded APK lookup failed for index ${idx}:`,
+            err.message
+          );
+        }
+      }
+    }
+
+    return false;
+  } catch (err) {
+    console.error(
+      "[ANALYSIS REQUEST] Failed to check uploaded APK by package/hash:",
+      err.message
+    );
+    return false;
+  }
+};
+
+const hasExistingAnalysisRequest = async (esClient, packageName, sha256) => {
+  if (!esClient || (!packageName && !sha256)) {
+    return false;
+  }
+
+  const should = [];
+  if (sha256) {
+    should.push({ term: { sha256: { value: sha256 } } });
+  }
+  if (packageName) {
+    should.push({ term: { packageName: { value: packageName } } });
+  }
+
+  if (!should.length) {
     return false;
   }
 
   try {
     const result = await esClient.search({
-      index: sourceIndex,
+      index: REQUESTS_INDEX_PATTERN,
       size: 1,
+      sort: [{ createdAt: { order: "desc", unmapped_type: "date" } }],
       query: {
         bool: {
-          filter: [
-            { term: { packageName: { value: packageName } } },
-            {
-              bool: {
-                should: [
-                  { exists: { field: "apkFilePath" } },
-                  { term: { uploadSource: "android_app" } },
-                ],
-                minimum_should_match: 1,
-              },
-            },
-          ],
+          filter: [{ term: { type: "apk_upload_request" } }],
+          should,
+          minimum_should_match: 1,
         },
       },
     });
 
     return (result.hits?.hits || []).length > 0;
   } catch (err) {
-    console.error(
-      "[ANALYSIS REQUEST] Failed to check uploaded APK by package:",
-      err.message
-    );
+    if (err?.meta?.statusCode === 404) {
+      return false;
+    }
+    console.error("[ANALYSIS REQUEST] Failed to check duplicate SOAR request:", err.message);
     return false;
   }
 };
@@ -137,11 +214,20 @@ const createAnalysisRequestFromHashCheck = async (esClient, payload) => {
   const uploadedForPackage = await hasUploadedApkForPackage(
     esClient,
     sourceIndex,
-    packageName
+    packageName,
+    sha256
   );
   if (uploadedForPackage) {
     console.log(
-      `⚠️  [ANALYSIS REQUEST] Skipped - APK already uploaded for package ${packageName} (today index)`
+      `⚠️  [ANALYSIS REQUEST] Skipped - APK already uploaded for package/hash ${packageName || sha256} (today index)`
+    );
+    return false;
+  }
+
+  const duplicateRequestExists = await hasExistingAnalysisRequest(esClient, packageName, sha256);
+  if (duplicateRequestExists) {
+    console.log(
+      `⚠️  [ANALYSIS REQUEST] Skipped - existing SOAR request already present for ${packageName || sha256}`
     );
     return false;
   }
@@ -210,5 +296,6 @@ module.exports = {
   getHashCheckDetectedFromDoc,
   isAlreadyUploadedFromDoc,
   hasUploadedApkForPackage,
+  hasExistingAnalysisRequest,
   createAnalysisRequestFromHashCheck,
 };

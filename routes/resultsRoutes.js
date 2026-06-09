@@ -2,6 +2,28 @@ const express = require("express");
 const router = express.Router();
 const { calculateWeightedRiskScore } = require("../utils/riskAlgorithm");
 const { checkVirusTotal } = require("../utils/virusTotal");
+const { upsertBlacklistEntry, getBlacklistEntry, listBlacklistEntries } = require("../utils/blacklistDB");
+
+const dedupeApps = (apps = []) => {
+  const byKey = new Map();
+  for (const app of apps) {
+    const sha = String(app.sha256 || '').trim().toLowerCase();
+    const pkg = String(app.packageName || '').trim().toLowerCase();
+    const key = sha ? `sha:${sha}` : pkg ? `pkg:${pkg}` : `id:${app.id || Math.random()}`;
+    const current = byKey.get(key);
+    if (!current) {
+      byKey.set(key, app);
+      continue;
+    }
+
+    const currentTs = new Date(current.timestamp || current.socUpdatedAt || 0).getTime() || 0;
+    const candidateTs = new Date(app.timestamp || app.socUpdatedAt || 0).getTime() || 0;
+    if (candidateTs >= currentTs) {
+      byKey.set(key, app);
+    }
+  }
+  return Array.from(byKey.values());
+};
 
 const requireWebAuth = (req, res, next) => {
   if (req.session && req.session.authenticated) return next();
@@ -19,13 +41,168 @@ function getIndexNameForDate(dateString) {
 // ── small HTML escape helper ──────────────────────────────────────────────────
 const esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
+const formatUiDateTime = (value) => {
+  const parsed = value ? new Date(value) : null;
+  if (!parsed || Number.isNaN(parsed.getTime())) {
+    return 'N/A';
+  }
+  return parsed.toLocaleString();
+};
+
+const normalizeAnalystName = (value) => {
+  const name = String(value || '').trim();
+  if (!name || name.toLowerCase() === 'unknown analyst') {
+    return 'SOC Analyst';
+  }
+  return name;
+};
+
+const isSocBlacklisted = (app) => {
+  const source = String(app?.statusSource || '').toLowerCase();
+  const finalDecisionStatus = String(app?.finalDecision?.status || '').toLowerCase();
+  return (
+    app?.blacklist?.active === true ||
+    source === 'soc analyst' ||
+    finalDecisionStatus === 'malicious'
+  );
+};
+
+const joinEvidenceParts = (parts) => {
+  if (parts.length === 0) {
+    return '';
+  }
+  if (parts.length === 1) {
+    return parts[0];
+  }
+  if (parts.length === 2) {
+    return `${parts[0]} and ${parts[1]}`;
+  }
+  return `${parts.slice(0, -1).join(', ')}, and ${parts[parts.length - 1]}`;
+};
+
+const buildBlacklistEvidenceParts = (app) => {
+  const parts = [];
+
+  const vtRatio = app?.virusTotalAnalysis?.detectionRatio || app?.virusTotalHashCheck?.detectionRatio;
+  if (vtRatio && vtRatio !== 'N/A') {
+    parts.push(`VirusTotal flagged ${vtRatio}`);
+  }
+
+  const highRisk = Number(app?.mobsfAnalysis?.high_risk_findings || 0);
+  if (highRisk > 0) {
+    parts.push(`static analysis found ${highRisk} high-risk finding${highRisk === 1 ? '' : 's'}`);
+  }
+
+  const dangerousPerms = Array.isArray(app?.mobsfAnalysis?.dangerous_permissions)
+    ? app.mobsfAnalysis.dangerous_permissions.length
+    : 0;
+  if (dangerousPerms > 0) {
+    parts.push(`the APK requested ${dangerousPerms} dangerous permission${dangerousPerms === 1 ? '' : 's'}`);
+  }
+
+  const trackers = Number(app?.dynamicAnalysis?.trackers || 0);
+  if (trackers > 0) {
+    parts.push(`dynamic analysis exposed ${trackers} tracker${trackers === 1 ? '' : 's'}`);
+  }
+
+  const networkIssues = Number(app?.dynamicAnalysis?.network_security_issues || 0);
+  if (networkIssues > 0) {
+    parts.push(`runtime traffic showed ${networkIssues} network security issue${networkIssues === 1 ? '' : 's'}`);
+  }
+
+  const mlLabel = String(app?.mlPredictionLabel || '').toUpperCase();
+  if (mlLabel && mlLabel !== 'SAFE') {
+    const probability = app?.mlPredictionScore != null ? ` with ${(Number(app.mlPredictionScore) * 100).toFixed(1)}% confidence` : '';
+    parts.push(`the ML model predicted ${mlLabel}${probability}`);
+  }
+
+  return parts;
+};
+
+const buildBlacklistSummary = (app) => {
+  const analystReason = app?.finalDecision?.remarks || app?.blacklist?.reason || app?.socRemarks;
+  if (analystReason) {
+    return esc(analystReason);
+  }
+
+  const parts = buildBlacklistEvidenceParts(app);
+  if (parts.length === 0) {
+    return 'SOC analyst manually blacklisted this app after review.';
+  }
+
+  return esc(joinEvidenceParts(parts));
+};
+
+const buildBlacklistReason = (app) => {
+  const analystReason = app?.finalDecision?.remarks || app?.blacklist?.reason || app?.socRemarks;
+  if (analystReason) {
+    return esc(`This app was blacklisted by the SOC analyst because ${analystReason.trim().replace(/[.\s]+$/, '')}.`);
+  }
+
+  const parts = buildBlacklistEvidenceParts(app);
+
+  if (parts.length === 0) {
+    return 'Marked malicious by SOC analyst after reviewing the available threat intelligence and analysis evidence.';
+  }
+
+  return esc(`This app was blacklisted because ${joinEvidenceParts(parts)}.`);
+};
+
+const buildBlacklistHTML = (apps) => {
+  if (!apps.length) {
+    return '';
+  }
+
+  return `
+    <div class="blacklist-section">
+      <div class="blacklist-header">
+        <div>
+          <div class="blacklist-title">SOC Blacklist</div>
+          <div class="blacklist-subtitle">Apps manually confirmed as malicious by the SOC analyst</div>
+        </div>
+        <div class="blacklist-count">${apps.length} listed</div>
+      </div>
+      <div class="blacklist-grid">
+        ${apps.map((app) => {
+          const reviewedAt = formatUiDateTime(
+            app?.blacklist?.firstBlacklistedAt ||
+            app?.finalDecision?.decidedAt ||
+            app?.socUpdatedAt ||
+            app?.blacklist?.updatedAt
+          );
+          const reviewedBy = esc(normalizeAnalystName(app?.finalDecision?.decidedBy || app?.blacklist?.updatedBy || app?.lastUpdatedBy || 'SOC Analyst'));
+          const reasonId = `blacklist-reason-${esc(app.sha256 || app.packageName || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '')}`;
+          return `
+            <div class="blacklist-card">
+              <div class="blacklist-card-header">
+                <div>
+                  <div class="blacklist-app-name">${esc(app.appName || 'Unknown App')}</div>
+                  <div class="blacklist-app-pkg">${esc(app.packageName || 'N/A')}</div>
+                </div>
+                <div class="blacklist-badge">BLACKLISTED</div>
+              </div>
+              <div class="blacklist-meta">Blacklisted by ${reviewedBy} on ${reviewedAt}</div>
+              <div class="blacklist-summary">${buildBlacklistSummary(app)}</div>
+              <button class="blacklist-reason-btn" onclick="toggleBlacklistReason('${reasonId}', this)">View Reason</button>
+              <div class="blacklist-reason" id="${reasonId}" style="display:none;">${buildBlacklistReason(app)}</div>
+            </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+};
+
 function buildAppCardHTML(app, index) {
   const sha256      = app.sha256 || '';
   const appName     = esc(app.appName || 'Unknown App');
   const pkgName     = esc(app.packageName || 'N/A');
   const uploadedAt  = app.timestamp ? new Date(app.timestamp).toLocaleString() : 'N/A';
   const appStatus   = (app.status || 'unknown').toLowerCase();
+  const blacklisted = app?.blacklist?.active === true;
+  const blacklistMeta = blacklisted
+    ? `<div class="card-blacklist">Blacklisted${app?.blacklist?.firstBlacklistedAt ? ` since ${formatUiDateTime(app.blacklist.firstBlacklistedAt)}` : ''}</div>`
+    : '';
   const fileSize    = app.sizeMB ? `${Number(app.sizeMB).toFixed(2)} MB` : 'N/A';
+  const lastSocNotification = app?.socNotification?.lastSentAt ? formatUiDateTime(app.socNotification.lastSentAt) : null;
 
   // Status colors
   const sColor = appStatus === 'malicious' ? '#ef4444' : appStatus === 'suspicious' ? '#f59e0b' : appStatus === 'safe' ? '#22c55e' : '#94a3b8';
@@ -67,6 +244,7 @@ function buildAppCardHTML(app, index) {
     <div class="card-identity">
       <div class="card-name">${appName}</div>
       <div class="card-pkg">${pkgName}</div>
+      ${blacklistMeta}
       <div class="card-meta">${fileSize} &nbsp;&middot;&nbsp; Uploaded: ${uploadedAt}</div>
     </div>
     <div class="card-verdict" style="background:${sBg};border-color:${sBorder}">
@@ -114,6 +292,7 @@ function buildAppCardHTML(app, index) {
     </div>
     <div class="card-actions">
       <button class="btn-action btn-notify" id="notify-btn-${sha256}" onclick="sendNotification('${sha256}')">Send Notification</button>
+      ${lastSocNotification ? `<span class="soc-note">Last sent: ${esc(lastSocNotification)}</span>` : ''}
     </div>
   </div>
 
@@ -179,11 +358,32 @@ router.get("/", requireWebAuth, async (req, res) => {
     try {
       const result = await esClient.search({
         index: indexName,
-        size: 100,
+        size: 500,
         query: { term: { uploadedByUser: true } },
         sort: [{ timestamp: { order: "desc" } }],
       });
-      apps = result.hits.hits.map((hit) => ({ ...hit._source, id: hit._id }));
+      apps = dedupeApps(result.hits.hits.map((hit) => ({ ...hit._source, id: hit._id })));
+
+      apps = apps.map((app) => {
+        const entry = getBlacklistEntry(app.sha256);
+        if (!entry || !entry.active) {
+          return app;
+        }
+        return {
+          ...app,
+          status: 'malicious',
+          statusSource: app.statusSource || 'BlacklistDB',
+          blacklist: {
+            ...(app.blacklist || {}),
+            active: true,
+            reason: app.blacklist?.reason || entry.reason,
+            source: app.blacklist?.source || entry.source,
+            updatedBy: app.blacklist?.updatedBy || entry.updatedBy,
+            updatedAt: app.blacklist?.updatedAt || entry.lastUpdatedAt,
+            firstBlacklistedAt: app.blacklist?.firstBlacklistedAt || entry.firstBlacklistedAt,
+          },
+        };
+      });
 
       // Quick VT hash check for any app missing analysis
       for (let i = 0; i < apps.length; i++) {
@@ -207,11 +407,53 @@ router.get("/", requireWebAuth, async (req, res) => {
       }
     } catch (_) { /* index may not exist yet */ }
 
+    const globalBlacklistEntries = listBlacklistEntries({ activeOnly: true }).filter((entry) => {
+      const src = String(entry?.source || '').toLowerCase();
+      const by = String(entry?.updatedBy || '').toLowerCase();
+      return src.includes('soc') || by.includes('soc');
+    });
+    const globalBlacklistApps = globalBlacklistEntries.map((entry) => {
+      const fromToday = apps.find((app) => String(app.sha256 || '').toLowerCase() === String(entry.hash || '').toLowerCase());
+      if (fromToday) {
+        return {
+          ...fromToday,
+          status: 'malicious',
+          statusSource: fromToday.statusSource || 'BlacklistDB',
+          blacklist: {
+            ...(fromToday.blacklist || {}),
+            active: true,
+            reason: fromToday.blacklist?.reason || entry.reason,
+            source: fromToday.blacklist?.source || entry.source,
+            firstBlacklistedAt: fromToday.blacklist?.firstBlacklistedAt || entry.firstBlacklistedAt,
+            updatedAt: fromToday.blacklist?.updatedAt || entry.lastUpdatedAt,
+            updatedBy: fromToday.blacklist?.updatedBy || entry.updatedBy,
+          },
+        };
+      }
+
+      return {
+        appName: entry.appName || 'Unknown App',
+        packageName: entry.packageName || 'N/A',
+        sha256: entry.hash,
+        status: 'malicious',
+        statusSource: entry.source || 'BlacklistDB',
+        blacklist: {
+          active: true,
+          reason: entry.reason,
+          source: entry.source,
+          firstBlacklistedAt: entry.firstBlacklistedAt,
+          updatedAt: entry.lastUpdatedAt,
+          updatedBy: entry.updatedBy,
+        },
+      };
+    });
+
     const totalApps    = apps.length;
     const safeCount    = apps.filter(a => a.status === 'safe').length;
     const suspCount    = apps.filter(a => a.status === 'suspicious').length;
     const malCount     = apps.filter(a => a.status === 'malicious').length;
     const pendingCount = apps.filter(a => !a.status || a.status === 'pending' || a.status === 'unknown').length;
+    const blacklistHTML = buildBlacklistHTML(globalBlacklistApps);
 
     const appCardsHTML = apps.length > 0
       ? apps.map((app, i) => buildAppCardHTML(app, i + 1)).join('')
@@ -275,7 +517,32 @@ router.get("/", requireWebAuth, async (req, res) => {
     .filter-btn{padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid #334155;background:#1e293b;color:#94a3b8;transition:.15s}
     .filter-btn.active{background:#1d4ed8;color:#fff;border-color:#1d4ed8}
     .filter-btn:hover{background:#263248;color:#e2e8f0}
+    .blacklist-toggle-btn{padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid #7f1d1d;background:#450a0a;color:#fecaca;transition:.15s}
+    .blacklist-toggle-btn:hover{background:#5b1010;color:#fff0f0}
     .apps-count{margin-left:auto;font-size:12px;color:#64748b}
+
+    /* ── Blacklist ── */
+    .blacklist-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:1200;align-items:center;justify-content:center;padding:20px}
+    .blacklist-modal.open{display:flex}
+    .blacklist-modal-panel{width:min(1000px,100%);max-height:85vh;overflow:auto;background:#0b1120;border:1px solid #3f1212;border-radius:16px;padding:18px;box-shadow:0 24px 80px rgba(0,0,0,.55)}
+    .blacklist-section{background:#0b1120;border:1px solid #3f1212;border-radius:12px;padding:16px 18px}
+    .blacklist-header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+    .blacklist-title{font-size:18px;font-weight:800;color:#fecaca}
+    .blacklist-subtitle{font-size:12px;color:#fca5a5}
+    .blacklist-count{font-size:12px;font-weight:700;color:#fca5a5;background:#450a0a;border:1px solid #7f1d1d;border-radius:999px;padding:6px 10px}
+    .blacklist-close{background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:700;cursor:pointer}
+    .blacklist-close:hover{background:#374151}
+    .blacklist-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+    .blacklist-card{background:#12070a;border:1px solid #7f1d1d;border-radius:10px;padding:14px}
+    .blacklist-card-header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:8px}
+    .blacklist-app-name{font-size:15px;font-weight:700;color:#fee2e2}
+    .blacklist-app-pkg{font-size:11px;color:#fca5a5;font-family:monospace;margin-top:4px}
+    .blacklist-badge{font-size:10px;font-weight:800;letter-spacing:.08em;color:#fecaca;background:#7f1d1d;border-radius:999px;padding:6px 9px}
+    .blacklist-meta{font-size:11px;color:#fca5a5;margin-bottom:8px}
+    .blacklist-summary{font-size:12px;color:#fecaca;line-height:1.6;margin-bottom:10px}
+    .blacklist-reason-btn{background:#2b1220;color:#fecaca;border:1px solid #7f1d1d;border-radius:8px;padding:8px 12px;font-size:11px;font-weight:700;cursor:pointer;transition:.15s;margin-bottom:10px}
+    .blacklist-reason-btn:hover{background:#451a24}
+    .blacklist-reason{font-size:12px;color:#e2e8f0;line-height:1.6}
 
     /* ── App Card ── */
     .app-card{background:#0b1120;border:1px solid #1a2332;border-radius:12px;margin-bottom:14px;overflow:hidden;transition:border-color .2s}
@@ -285,6 +552,7 @@ router.get("/", requireWebAuth, async (req, res) => {
     .card-identity{flex:1}
     .card-name{font-size:15px;font-weight:700;color:#f1f5f9;margin-bottom:3px}
     .card-pkg{font-size:11px;color: #94a3b8;font-family:monospace;margin-bottom:4px}
+    .card-blacklist{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#fecaca;background:#7f1d1d;border:1px solid #b91c1c;border-radius:999px;padding:3px 8px;margin-bottom:6px}
     .card-meta{font-size:11px;color: #64748b}
     .card-verdict{border:1px solid #334155;border-radius:10px;padding:10px 16px;text-align:center;min-width:130px;flex-shrink:0}
     .verdict-dot{width:10px;height:10px;border-radius:50%;margin:0 auto 6px}
@@ -305,6 +573,7 @@ router.get("/", requireWebAuth, async (req, res) => {
     .soc-select{background:#1e293b;border:1px solid #334155;color:#e2e8f0;padding:7px 12px;border-radius:7px;font-size:12px;cursor:pointer;min-width:180px}
     .soc-select:focus{outline:none;border-color:#3b82f6}
     .soc-hint{font-size:11px;color:#22c55e}
+    .soc-note{font-size:11px;color:#64748b;align-self:center}
     .card-actions{display:flex;gap:7px;margin-left:auto;flex-wrap:wrap}
     .btn-action{padding:6px 12px;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid;transition:.15s;text-decoration:none;display:inline-flex;align-items:center;gap:4px}
     .btn-notify{background:#131f35;color:#94a3b8;border-color:#1e3a5f}.btn-notify:hover{background:#1a2d48;color:#e2e8f0}
@@ -479,7 +748,17 @@ router.get("/", requireWebAuth, async (req, res) => {
     <button class="filter-btn"        id="fb-suspicious" onclick="filterCards('suspicious')">Suspicious (${suspCount})</button>
     <button class="filter-btn"        id="fb-safe"       onclick="filterCards('safe')">Safe (${safeCount})</button>
     <button class="filter-btn"        id="fb-pending"    onclick="filterCards('pending')">Pending (${pendingCount})</button>
+    <button class="blacklist-toggle-btn" onclick="toggleBlacklistModal(true)">Blacklist (${globalBlacklistApps.length})</button>
     <span class="apps-count" id="visible-count">${totalApps} of ${totalApps} shown</span>
+  </div>
+
+  <div class="blacklist-modal" id="blacklist-modal" onclick="toggleBlacklistModal(false, event)">
+    <div class="blacklist-modal-panel" onclick="event.stopPropagation()">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+        <button class="blacklist-close" onclick="toggleBlacklistModal(false)">Close</button>
+      </div>
+      ${blacklistHTML || '<div class="blacklist-section"><div class="blacklist-title">SOC Blacklist</div><div class="blacklist-subtitle" style="margin-top:8px;">No SOC-blacklisted apps for this date.</div></div>'}
+    </div>
   </div>
 
   <!-- App Cards -->
@@ -493,6 +772,16 @@ router.get("/", requireWebAuth, async (req, res) => {
 function toggleSidebar() {
   document.getElementById('sidebar').classList.toggle('open');
   document.getElementById('overlay').classList.toggle('open');
+}
+
+function toggleBlacklistModal(force, event) {
+  if (event && event.target && event.target.id !== 'blacklist-modal') {
+    return;
+  }
+  const modal = document.getElementById('blacklist-modal');
+  if (!modal) return;
+  const shouldOpen = typeof force === 'boolean' ? force : !modal.classList.contains('open');
+  modal.classList.toggle('open', shouldOpen);
 }
 
 // ── Filter ────────────────────────────────────────────────────────────────────
@@ -664,9 +953,20 @@ function toggleAlgoDetails(sha256) {
   txt.textContent = open ? '▼ Show Score Breakdown' : '▲ Hide Score Breakdown';
 }
 
+function toggleBlacklistReason(reasonId, button) {
+  const reason = document.getElementById(reasonId);
+  if (!reason) return;
+  const isOpen = reason.style.display === 'block';
+  reason.style.display = isOpen ? 'none' : 'block';
+  if (button) {
+    button.textContent = isOpen ? 'View Reason' : 'Hide Reason';
+  }
+}
+
 // ── Notify ────────────────────────────────────────────────────────────────────
 async function sendNotification(sha256) {
   const btn = document.getElementById('notify-btn-' + sha256);
+  const hint = document.getElementById('soc-hint-' + sha256);
   if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
   try {
     const r = await fetch('/results/send-notification', {
@@ -680,14 +980,31 @@ async function sendNotification(sha256) {
         btn.textContent = 'Notification Sent';
         btn.style.color = '#22c55e';
         btn.style.borderColor = '#166534';
+        if (hint) {
+          hint.textContent = 'Notification sent at ' + new Date(d.sentAt || Date.now()).toLocaleTimeString();
+          hint.style.color = '#22c55e';
+        }
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.textContent = 'Send Notification';
+          btn.style.color = '#94a3b8';
+          btn.style.borderColor = '#1e3a5f';
+        }, 1600);
       } else {
         btn.disabled = false;
         btn.textContent = 'Send Notification';
+        btn.style.color = '#94a3b8';
+        btn.style.borderColor = '#1e3a5f';
         alert('Error: ' + d.message);
       }
     }
   } catch (e) {
-    if (btn) { btn.disabled = false; btn.textContent = 'Send Notification'; }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Send Notification';
+      btn.style.color = '#94a3b8';
+      btn.style.borderColor = '#1e3a5f';
+    }
     alert('Error: ' + e.message);
   }
 }
@@ -747,20 +1064,42 @@ router.post("/update-soc-status", requireWebAuth, async (req, res) => {
   try {
     let foundIndex = null;
     let docId      = null;
+    let foundDoc   = null;
     const today    = new Date().toISOString().split("T")[0];
     try {
       const result = await esClient.search({ index: getIndexNameForDate(today), query: { term: { sha256 } } });
-      if (result.hits.hits.length > 0) { foundIndex = result.hits.hits[0]._index; docId = result.hits.hits[0]._id; }
+      if (result.hits.hits.length > 0) {
+        foundIndex = result.hits.hits[0]._index;
+        docId = result.hits.hits[0]._id;
+        foundDoc = result.hits.hits[0]._source || {};
+      }
     } catch (_) { /* fall through */ }
 
     if (!docId) {
       const allResult = await esClient.search({
         index: "mobile_apps_*", query: { term: { sha256 } }, size: 1, sort: [{ timestamp: { order: "desc" } }],
       });
-      if (allResult.hits.hits.length > 0) { foundIndex = allResult.hits.hits[0]._index; docId = allResult.hits.hits[0]._id; }
+      if (allResult.hits.hits.length > 0) {
+        foundIndex = allResult.hits.hits[0]._index;
+        docId = allResult.hits.hits[0]._id;
+        foundDoc = allResult.hits.hits[0]._source || {};
+      }
     }
 
     if (!docId) return res.json({ success: false, message: "App not found" });
+
+    const existingBlacklist = foundDoc?.blacklist || {};
+    const persistentEntry = status === "malicious"
+      ? upsertBlacklistEntry(sha256, {
+          source: "SOC Analyst",
+          updatedBy: req.session.username || "SOC Analyst",
+          reason: existingBlacklist.reason || "Marked as malicious by SOC analyst",
+          blacklistedAt: new Date().toISOString(),
+          appName: foundDoc?.appName,
+          packageName: foundDoc?.packageName,
+          active: true,
+        })
+      : getBlacklistEntry(sha256);
 
     await esClient.update({
       index: foundIndex, id: docId, retry_on_conflict: 3,
@@ -768,6 +1107,14 @@ router.post("/update-soc-status", requireWebAuth, async (req, res) => {
         status,
         statusSource:  "SOC Analyst",
         socUpdatedAt:  new Date().toISOString(),
+        blacklist: {
+          active: status === "malicious" || existingBlacklist.active === true,
+          reason: existingBlacklist.reason || persistentEntry?.reason || "Marked as malicious by SOC analyst",
+          firstBlacklistedAt: existingBlacklist.firstBlacklistedAt || persistentEntry?.firstBlacklistedAt || null,
+          updatedAt: new Date().toISOString(),
+          updatedBy: req.session.username || "Unknown Analyst",
+          source: persistentEntry?.source || existingBlacklist.source || "SOC Analyst",
+        },
         lastModified:  new Date().toISOString(),
       }},
     });
@@ -786,6 +1133,7 @@ router.post("/send-notification", requireWebAuth, async (req, res) => {
   try {
     // Look up app data so notification is accurate
     let appDoc = null;
+    let appHit = null;
     try {
       const searchResult = await esClient.search({
         index: "mobile_apps_*",
@@ -793,13 +1141,24 @@ router.post("/send-notification", requireWebAuth, async (req, res) => {
         query: { term: { sha256 } },
         sort: [{ timestamp: { order: "desc" } }],
       });
-      if (searchResult.hits.hits.length > 0) appDoc = searchResult.hits.hits[0]._source;
+      if (searchResult.hits.hits.length > 0) {
+        appHit = searchResult.hits.hits[0];
+        appDoc = appHit._source;
+      }
     } catch (_) {}
+
+    if (!appDoc || !appHit) {
+      return res.json({ success: false, message: "App not found" });
+    }
 
     const appName    = appDoc?.appName || appDoc?.packageName || "Unknown App";
     const pkgName    = appDoc?.packageName || "N/A";
     const socStatus  = (appDoc?.status || "pending").toLowerCase();
     const vtRatio    = appDoc?.virusTotalAnalysis?.detectionRatio || appDoc?.virusTotalHashCheck?.detectionRatio || "N/A";
+    const detectedEngines =
+      appDoc?.virusTotalAnalysis?.detectedEngines ??
+      appDoc?.virusTotalHashCheck?.detectedEngines ??
+      (typeof vtRatio === 'string' && vtRatio.includes('/') ? Number(vtRatio.split('/')[0]) : 0);
     const secScore   = appDoc?.mobsfAnalysis?.security_score ?? null;
     const now        = new Date();
     const ts         = now.toISOString();
@@ -843,14 +1202,35 @@ router.post("/send-notification", requireWebAuth, async (req, res) => {
         packageName: pkgName,
         sha256,
         detectionRatio: vtRatio,
+        detectedEngines,
+        securityScore: secScore,
         socStatus,
         createdAt: ts,
         timestamp: ts,
         source: "soc-analyst",
+        sentBy: req.session.username || "Unknown Analyst",
+        manual: true,
       },
     });
 
-    return res.json({ success: true, message: "Notification sent" });
+    await esClient.update({
+      index: appHit._index,
+      id: appHit._id,
+      retry_on_conflict: 3,
+      body: {
+        doc: {
+          socNotification: {
+            notificationId: notifId,
+            lastSentAt: ts,
+            lastSentDate: ts.slice(0, 10),
+            sentBy: req.session.username || "Unknown Analyst",
+            statusAtSend: socStatus,
+          },
+        },
+      },
+    });
+
+    return res.json({ success: true, message: "Notification sent", sentAt: ts, notificationId: notifId });
   } catch (err) {
     return res.json({ success: false, message: err.message });
   }

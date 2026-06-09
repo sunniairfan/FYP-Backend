@@ -3,9 +3,9 @@
  *
  * SOURCES & BASE WEIGHTS (when all 4 available):
  *   VirusTotal     40%  — gold standard: AV engine consensus
- *   MobSF Static   25%  — code-level: permissions, APIs, manifest
- *   MobSF Dynamic  28%  — runtime: network, trackers, TLS
- *   ML Prediction   7%  — trained malware probability model
+ *   MobSF Static   21%  — code-level: permissions, APIs, manifest
+ *   MobSF Dynamic  21%  — runtime: network, trackers, TLS
+ *   ML Prediction  18%  — trained malware probability model
  *
  * SCORE SCALE  0–100
  *   0–29   SAFE       |  30–54  SUSPICIOUS  |  55–100  MALICIOUS
@@ -34,7 +34,7 @@ function statusFromScore(s) {
 }
 
 function calculateWeightedRiskScore(app) {
-  const BASE_WEIGHTS = { vt: 0.40, mobsfStatic: 0.25, mobsfDynamic: 0.28, ml: 0.07 };
+  const BASE_WEIGHTS = { vt: 0.40, mobsfStatic: 0.21, mobsfDynamic: 0.21, ml: 0.18 };
 
   const result = {
     vt:           { score: null, isAvailable: false, status: 'UNKNOWN', weight: 0, explanation: '', details: {} },

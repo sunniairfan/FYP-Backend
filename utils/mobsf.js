@@ -2,9 +2,17 @@ const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
+
 // MobSF server URL and API key from environment variables or defaults
 const MOBSF_URL = process.env.MOBSF_URL || 'http://localhost:8000';
-const API_KEY = process.env.MOBSF_API_KEY || '822da3b3ad8743dc3536e0e0121c854658f4bfea244401b1552c54130ef943f8';
+const API_KEY = process.env.MOBSF_API_KEY || 'effd663508f219fcfa0a8b75287dc55e0f5967bdc10a229b1a309079a86e8904';
+
+// Shared axios instance with HTTP keepalive — reuses TCP connections so each call
+// doesn't pay a fresh connection overhead (~100-300ms saved per request)
+const axiosInstance = axios.create({
+  httpAgent: new http.Agent({ keepAlive: true, maxSockets: 10 }),
+});
 function log(message, data = null) {
   console.log(`[MobSF] ${message}`, data ? JSON.stringify(data, null, 2) : '');
 }
@@ -25,7 +33,7 @@ function logError(message, error) {
 async function checkConnection() {
   try {
     log("Checking MobSF connection...");
-    const response = await axios.get(`${MOBSF_URL}/api/v1/scans`, {
+    const response = await axiosInstance.get(`${MOBSF_URL}/api/v1/scans`, {
       headers: { 'Authorization': API_KEY },
       timeout: 10000
     });
@@ -75,7 +83,7 @@ async function uploadToMobSF(filePath) {
       }
     });
     // Send upload request
-    const response = await axios.post(`${MOBSF_URL}/api/v1/upload`, form, {
+    const response = await axiosInstance.post(`${MOBSF_URL}/api/v1/upload`, form, {
       headers: {
         ...formHeaders,
         'Authorization': API_KEY
@@ -113,7 +121,7 @@ async function scanWithMobSF(hash) {
       }
     });
     // Send scan request
-    const response = await axios.post(
+    const response = await axiosInstance.post(
       `${MOBSF_URL}/api/v1/scan`,
       params,
       {
@@ -149,7 +157,7 @@ async function getJsonReport(hash) {
       }
     });
  
-    const response = await axios.post(
+    const response = await axiosInstance.post(
       `${MOBSF_URL}/api/v1/report_json`,
       params,
       {
@@ -185,7 +193,7 @@ async function getPdfReport(hash) {
       }
     });
 // Send PDF report request
-    const response = await axios.post(
+    const response = await axiosInstance.post(
       `${MOBSF_URL}/api/v1/download_pdf`,
       params,
       {
@@ -228,7 +236,7 @@ async function deleteScan(hash) {
       }
     });
 // Send delete request
-    const response = await axios.post(
+    const response = await axiosInstance.post(
       `${MOBSF_URL}/api/v1/delete_scan`,
       params,
       {
@@ -245,6 +253,53 @@ async function deleteScan(hash) {
   } catch (error) {
     logError(`Failed to delete scan for hash: ${hash}`, error);
     throw error;
+  }
+}
+
+// Look up MobSF MD5 hash by APK SHA256
+// MobSF's /scans list does NOT include SHA256, so we fetch each scan's report to compare
+async function findHashBySha256(sha256) {
+  try {
+    log(`Looking up MobSF MD5 hash for SHA256: ${sha256}`);
+    const response = await axiosInstance.get(`${MOBSF_URL}/api/v1/scans?page=1&page_size=100`, {
+      headers: { 'Authorization': API_KEY },
+      timeout: 15000
+    });
+    const content = response.data?.content || [];
+
+    for (const scan of content) {
+      const md5 = scan.MD5 || scan.md5 || scan.hash;
+      if (!md5) continue;
+      try {
+        const params = new URLSearchParams();
+        params.append('hash', md5);
+        const reportRes = await axiosInstance.post(
+          `${MOBSF_URL}/api/v1/report_json`,
+          params,
+          {
+            headers: {
+              'Authorization': API_KEY,
+              'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            timeout: 15000
+          }
+        );
+        const reportSha256 = reportRes.data?.sha256 || reportRes.data?.SHA256 || '';
+        if (reportSha256.toLowerCase() === sha256.toLowerCase()) {
+          log(`Found MD5 ${md5} for SHA256 ${sha256}`);
+          // Return both hash AND the already-fetched report so callers don't fetch it again
+          return { hash: md5, reportJson: reportRes.data };
+        }
+      } catch (_) {
+        // skip this scan if report fetch fails
+      }
+    }
+
+    log(`No scan found for SHA256 ${sha256}`);
+    return null;
+  } catch (error) {
+    logError(`Failed to find hash for SHA256: ${sha256}`, error);
+    return null;
   }
 }
 
@@ -281,7 +336,7 @@ async function analyzeAppWithMobSF(filePath) {
 async function getDynamicApps() {
   try {
     log('Fetching apps available for dynamic analysis...');
-    const response = await axios.get(`${MOBSF_URL}/api/v1/dynamic/get_apps`, {
+    const response = await axiosInstance.get(`${MOBSF_URL}/api/v1/dynamic/get_apps`, {
       headers: { 'Authorization': API_KEY },
       timeout: 30000
     });
@@ -302,7 +357,7 @@ async function startDynamicAnalysis(hash, options = {}) {
     if (options.re_install !== undefined) params.append('re_install', options.re_install);
     if (options.install !== undefined) params.append('install', options.install);
 
-    const response = await axios.post(`${MOBSF_URL}/api/v1/dynamic/start_analysis`, params, {
+    const response = await axiosInstance.post(`${MOBSF_URL}/api/v1/dynamic/start_analysis`, params, {
       headers: {
         'Authorization': API_KEY,
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -323,7 +378,7 @@ async function stopDynamicAnalysis(hash) {
     log(`Stopping dynamic analysis for hash: ${hash}`);
     const params = new URLSearchParams();
     params.append('hash', hash);
-    const response = await axios.post(`${MOBSF_URL}/api/v1/dynamic/stop_analysis`, params, {
+    const response = await axiosInstance.post(`${MOBSF_URL}/api/v1/dynamic/stop_analysis`, params, {
       headers: {
         'Authorization': API_KEY,
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -344,7 +399,7 @@ async function getDynamicReportJson(hash) {
     log(`Fetching dynamic JSON report for hash: ${hash}`);
     const params = new URLSearchParams();
     params.append('hash', hash);
-    const response = await axios.post(`${MOBSF_URL}/api/v1/dynamic/report_json`, params, {
+    const response = await axiosInstance.post(`${MOBSF_URL}/api/v1/dynamic/report_json`, params, {
       headers: {
         'Authorization': API_KEY,
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -365,7 +420,7 @@ async function mobsfyAndroid(identifier) {
     log(`MobSFying Android device: ${identifier}`);
     const params = new URLSearchParams();
     params.append('identifier', identifier);
-    const response = await axios.post(`${MOBSF_URL}/api/v1/android/mobsfy`, params, {
+    const response = await axiosInstance.post(`${MOBSF_URL}/api/v1/android/mobsfy`, params, {
       headers: {
         'Authorization': API_KEY,
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -386,7 +441,7 @@ async function runTlsTests(hash) {
     log(`Running TLS tests for hash: ${hash}`);
     const params = new URLSearchParams();
     params.append('hash', hash);
-    const response = await axios.post(`${MOBSF_URL}/api/v1/android/tls_tests`, params, {
+    const response = await axiosInstance.post(`${MOBSF_URL}/api/v1/android/tls_tests`, params, {
       headers: {
         'Authorization': API_KEY,
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -418,7 +473,7 @@ async function fridaInstrument(hash, hooks = 'api_monitor,ssl_pinning_bypass,roo
     params.append('default_hooks', hooks);
     params.append('auxiliary_hooks', '');
     params.append('frida_code', '');
-    const response = await axios.post(`${MOBSF_URL}/api/v1/frida/instrument`, params, {
+    const response = await axiosInstance.post(`${MOBSF_URL}/api/v1/frida/instrument`, params, {
       headers: {
         'Authorization': API_KEY,
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -440,7 +495,7 @@ async function getFridaLogs(hash) {
     log(`Fetching Frida logs for hash: ${hash}`);
     const params = new URLSearchParams();
     params.append('hash', hash);
-    const response = await axios.post(`${MOBSF_URL}/api/v1/frida/logs`, params, {
+    const response = await axiosInstance.post(`${MOBSF_URL}/api/v1/frida/logs`, params, {
       headers: {
         'Authorization': API_KEY,
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -471,7 +526,7 @@ async function installRootCA(action = 'install') {
     log(`${action === 'install' ? 'Installing' : 'Removing'} Root CA...`);
     const params = new URLSearchParams();
     params.append('action', action);
-    const response = await axios.post(`${MOBSF_URL}/api/v1/android/root_ca`, params, {
+    const response = await axiosInstance.post(`${MOBSF_URL}/api/v1/android/root_ca`, params, {
       headers: { 'Authorization': API_KEY, 'Content-Type': 'application/x-www-form-urlencoded' },
       timeout: 60000
     });
@@ -489,7 +544,7 @@ async function setGlobalProxy(action = 'set') {
     log(`${action === 'set' ? 'Setting' : 'Unsetting'} global proxy...`);
     const params = new URLSearchParams();
     params.append('action', action);
-    const response = await axios.post(`${MOBSF_URL}/api/v1/android/global_proxy`, params, {
+    const response = await axiosInstance.post(`${MOBSF_URL}/api/v1/android/global_proxy`, params, {
       headers: { 'Authorization': API_KEY, 'Content-Type': 'application/x-www-form-urlencoded' },
       timeout: 60000
     });
@@ -508,7 +563,7 @@ async function runActivityTester(hash, test = 'exported') {
     const params = new URLSearchParams();
     params.append('hash', hash);
     params.append('test', test);
-    const response = await axios.post(`${MOBSF_URL}/api/v1/android/activity`, params, {
+    const response = await axiosInstance.post(`${MOBSF_URL}/api/v1/android/activity`, params, {
       headers: { 'Authorization': API_KEY, 'Content-Type': 'application/x-www-form-urlencoded' },
       timeout: 120000
     });
@@ -526,7 +581,7 @@ async function getFridaApiMonitor(hash) {
     log(`Fetching Frida API monitor data for hash: ${hash}`);
     const params = new URLSearchParams();
     params.append('hash', hash);
-    const response = await axios.post(`${MOBSF_URL}/api/v1/frida/api_monitor`, params, {
+    const response = await axiosInstance.post(`${MOBSF_URL}/api/v1/frida/api_monitor`, params, {
       headers: { 'Authorization': API_KEY, 'Content-Type': 'application/x-www-form-urlencoded' },
       timeout: 30000
     });
@@ -683,7 +738,7 @@ async function testMobSFConnection() {
     
     for (const endpoint of endpoints) {
       try {
-        await axios.get(`${MOBSF_URL}${endpoint}`, {
+        await axiosInstance.get(`${MOBSF_URL}${endpoint}`, {
           headers: { 'Authorization': API_KEY },
           timeout: 5000
         });
@@ -720,6 +775,7 @@ module.exports = {
   getPdfReport,
   deleteScan,
   checkConnection,
+  findHashBySha256,
   analyzeAppWithMobSF,
   testMobSFConnection,
   // Dynamic analysis

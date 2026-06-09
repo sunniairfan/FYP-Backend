@@ -109,7 +109,8 @@ router.get("/", async (req, res) => {
         const alreadyUploaded = await hasUploadedApkForPackage(
           esClient,
           todayAppsIndex,
-          request.packageName
+          request.packageName,
+          request.sha256
         );
         uploadedCache.set(key, alreadyUploaded);
         if (alreadyUploaded) {

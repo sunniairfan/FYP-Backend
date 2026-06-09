@@ -53,6 +53,9 @@ const ensureIndexExists = async (esClient) => {
     if (!exists) {
       await esClient.indices.create({
         index: indexName,
+        settings: {
+          "index.mapping.total_fields.limit": 2000,
+        },
         mappings: {
           properties: {
             appName: { type: "text" },
@@ -91,15 +94,26 @@ const ensureIndexExists = async (esClient) => {
             apkFilePath: { type: "keyword" },
             apkFileName: { type: "keyword" },
             uploadSource: { type: "keyword" },
-            mobsfAnalysis: { type: "object" },
+            mobsfAnalysis: { type: "flattened" },
             lastMobsfAnalysis: { type: "date" },
             mobsfHash: { type: "keyword" },
             mobsfScanType: { type: "keyword" },
             mobsfError: { type: "text" },
+            virusTotalHashCheck: { type: "flattened" },
           },
         },
       });
       console.log(`✅ Created index: ${indexName}`);
+    } else {
+      // Bump the field limit on the existing index so large apps like NetHunter can be indexed
+      try {
+        await esClient.indices.putSettings({
+          index: indexName,
+          settings: { "index.mapping.total_fields.limit": 2000 },
+        });
+      } catch (settingsErr) {
+        console.warn(`⚠️  Could not update field limit for ${indexName}:`, settingsErr.message);
+      }
     }
   } catch (err) {
     console.error("❌ Failed to ensure index exists:", err.message);
