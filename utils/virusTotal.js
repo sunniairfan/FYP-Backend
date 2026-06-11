@@ -9,6 +9,16 @@ dotenv.config();
 const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY;
 const VT_BASE_URL = "https://www.virustotal.com/api/v3";
 
+const deriveThreatStatus = (detectedEngines) => {
+  if (!Number.isFinite(detectedEngines) || detectedEngines < 0) {
+    return "unknown";
+  }
+  if (detectedEngines === 0) {
+    return "safe";
+  }
+  return detectedEngines <= 3 ? "suspicious" : "malicious";
+};
+
 // Calculate SHA-256 hash of a file
 const calculateFileHash = (filePath) => {
   return new Promise((resolve, reject) => {
@@ -50,19 +60,19 @@ const checkVirusTotal = async (sha256, timeoutMs = 15000) => {
     const detectedEngines = malicious + suspicious;
     const totalEngines = harmless + malicious + suspicious + undetected + timeout;
     
-    let status = "safe";
-    if (malicious > 0) {
-      status = "malicious";
-    } else if (suspicious > 0) {
-      status = "suspicious";
-    }
+    const status = deriveThreatStatus(detectedEngines);
 
     return {
       status: status,
       scanTime: scanDate ? new Date(scanDate * 1000).toISOString() : new Date().toISOString(),
       detectionRatio: `${detectedEngines}/${totalEngines}`,
       totalEngines: totalEngines,
-      detectedEngines: detectedEngines
+      detectedEngines: detectedEngines,
+      maliciousCount: malicious,
+      suspiciousCount: suspicious,
+      harmlessCount: harmless,
+      undetectedCount: undetected,
+      timeoutCount: timeout
     };
 
   } catch (err) {
@@ -298,12 +308,7 @@ const analyzeFileWithVirusTotal = async (filePath) => {
     const detectedEngines = malicious + suspicious;
     const totalEngines = harmless + malicious + suspicious + undetected + timeout;
     
-    let status = "safe";
-    if (malicious > 0) {
-      status = "malicious";
-    } else if (suspicious > 0) {
-      status = "suspicious";
-    }
+    const status = deriveThreatStatus(detectedEngines);
 
     const attrs = fileReport?.attributes || {};
 

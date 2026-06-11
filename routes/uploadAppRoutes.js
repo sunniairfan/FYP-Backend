@@ -2941,7 +2941,9 @@ router.get("/apps", requireWebAuth, async (req, res) => {
       `;
 
       apps.forEach((app) => {
-        const fileInfo = app.apkFileName ? `${app.apkFileName}` : "No file uploaded";
+        const fileInfo = app.apkFileName
+          ? String(app.apkFileName).replace(/_[a-fA-F0-9]{64}\.apk$/, ".apk")
+          : "No file uploaded";
         const uploadDate = app.timestamp ? new Date(app.timestamp).toLocaleDateString() : 'N/A';
         const uploadDateTime = app.timestamp ? new Date(app.timestamp).toLocaleString() : 'N/A';
         const isSoarTriggered = String(app.uploadSource || '').toUpperCase() === 'SOAR' || Boolean(app.soarId || app.soarTriggeredAt);

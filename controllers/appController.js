@@ -39,6 +39,7 @@ const generateUploadId = () => {
 };
 
 const generateSoarId = () => `SOAR-${Date.now()}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+const SOAR_TRIGGER_THRESHOLD = 30;
 
 const normalizeUploadSource = (value) => {
   const normalized = String(value || "").trim().toLowerCase();
@@ -279,11 +280,42 @@ const uploadApp = async (req, res) => {
       console.warn("No expected hash provided in metadata; skipping integrity check.");
     }
 
+    // VT hash check must run even for blacklisted/signature-matched apps.
+    console.log(`🦠 [UPLOAD] Checking VirusTotal hash for ${app.packageName || "unknown_package"}`);
+    const vtResult = await checkVirusTotal(uploadedFileHash);
+    const hasVtHashData = vtResult && vtResult.status !== "unknown";
+    const virusTotalHashCheck = hasVtHashData
+      ? {
+          detectionRatio: vtResult.detectionRatio,
+          totalEngines: vtResult.totalEngines,
+          detectedEngines: vtResult.detectedEngines,
+          maliciousCount: vtResult.maliciousCount,
+          suspiciousCount: vtResult.suspiciousCount,
+          harmlessCount: vtResult.harmlessCount,
+          undetectedCount: vtResult.undetectedCount,
+          timeoutCount: vtResult.timeoutCount,
+          scanTime: vtResult.scanTime,
+        }
+      : {
+          detectionRatio: "0/0",
+          totalEngines: 0,
+          detectedEngines: 0,
+          scanTime: new Date().toISOString(),
+        };
+
     const safePackageName = app.packageName || "unknown_package";
-    const newFileName = `${safePackageName}_${Date.now()}.apk`;
+    const newFileName = `${safePackageName}_${uploadedFileHash}.apk`;
     const newFilePath = path.join(uploadsDir, newFileName);
-    fs.renameSync(apkFile.path, newFilePath);
-    console.log(`Renamed file to: ${newFilePath}`);
+
+    // If same-hash APK already exists on disk, reuse it and only sync DB state.
+    const reusedExistingFile = fs.existsSync(newFilePath);
+    if (reusedExistingFile) {
+      try { fs.unlinkSync(apkFile.path); } catch (_) {}
+      console.log(`Reusing existing APK file on disk: ${newFilePath}`);
+    } else {
+      fs.renameSync(apkFile.path, newFilePath);
+      console.log(`Renamed file to: ${newFilePath}`);
+    }
 
     const uploadId = generateUploadId();
     let status = "unknown";
@@ -306,6 +338,30 @@ const uploadApp = async (req, res) => {
       status = blacklistEntry?.active ? "malicious" : (doc._source.status || "unknown");
       source = blacklistEntry?.active ? "BlacklistDB" : (doc._source.source || "Elasticsearch");
 
+      if (!blacklistEntry?.active && hasVtHashData) {
+        status = vtResult.status;
+        source = "VirusTotal";
+      }
+
+      const alreadyUploaded = isAlreadyUploadedFromDoc(doc._source);
+      if (alreadyUploaded) {
+        return res.status(200).json({
+          success: true,
+          message: "APK already uploaded for this hash; duplicate upload skipped",
+          app: {
+            id: docId,
+            uploadId: doc._source.uploadId || null,
+            packageName: doc._source.packageName || safePackageName,
+            appName: doc._source.appName || safePackageName,
+            status,
+            source,
+            fileName: doc._source.apkFileName || newFileName,
+            sha256: uploadedFileHash,
+            duplicateSkipped: true,
+          },
+        });
+      }
+
       await esClient.update({
         index: getIndexName(),
         id: docId,
@@ -316,6 +372,7 @@ const uploadApp = async (req, res) => {
             timestamp: new Date(),
             apkFilePath: newFilePath,
             apkFileName: newFileName,
+            virusTotalHashCheck,
             uploadSource,
             ...(blacklistEntry?.active ? {
               status: "malicious",
@@ -340,6 +397,10 @@ const uploadApp = async (req, res) => {
         status = "malicious";
         source = blacklistEntry?.active ? "BlacklistDB" : "SignatureDB";
         console.log(`⚠️  [UPLOAD] Detected malicious app via SignatureDB: ${safePackageName}`);
+      } else if (hasVtHashData) {
+        status = vtResult.status;
+        source = "VirusTotal";
+        console.log(`✅ [UPLOAD] VirusTotal hash check: ${safePackageName} -> ${vtResult.status} (${vtResult.detectionRatio})`);
       } else {
         status = "unknown";
         source = "User Upload";
@@ -369,6 +430,7 @@ const uploadApp = async (req, res) => {
             source: blacklistEntry.source,
           },
         } : {}),
+        virusTotalHashCheck,
         apkFilePath: newFilePath,
         apkFileName: newFileName,
         uploadSource,
@@ -668,41 +730,56 @@ const receiveAppData = async (req, res) => {
           doc._source?.virusTotalAnalysis?.detectionRatio ||
           "N/A";
 
-        // If old docs don't have stored VT details, perform a hash lookup once in this flow.
-        if (!blacklistEntry?.active && !Number.isFinite(existingDetectedEngines)) {
+        // Re-check VT when old docs are missing data or have stale 0/0 hash check payloads.
+        const hasUsableVtData = Number.isFinite(existingDetectedEngines) && Number(existingTotalEngines) > 0;
+        if (!hasUsableVtData) {
           const vtResult = await checkVirusTotal(sha256);
           if (vtResult && vtResult.status !== "unknown") {
             existingDetectedEngines = vtResult.detectedEngines;
             existingTotalEngines = vtResult.totalEngines;
             existingDetectionRatio = vtResult.detectionRatio;
 
+            const shouldKeepForcedMalicious =
+              blacklistEntry?.active ||
+              doc._source?.source === "SignatureDB" ||
+              doc._source?.blacklist?.active === true;
+            const resolvedStatus = shouldKeepForcedMalicious ? "malicious" : vtResult.status;
+            const resolvedSource = shouldKeepForcedMalicious ? (blacklistEntry?.active ? "BlacklistDB" : "SignatureDB") : "VirusTotal";
+
             await esClient.update({
               index: getIndexName(),
               id: doc._id,
               body: {
                 doc: {
-                  status: vtResult.status,
-                  source: "VirusTotal",
+                  status: resolvedStatus,
+                  source: resolvedSource,
                   virusTotalHashCheck: {
                     detectionRatio: vtResult.detectionRatio,
                     totalEngines: vtResult.totalEngines,
                     detectedEngines: vtResult.detectedEngines,
+                    maliciousCount: vtResult.maliciousCount,
+                    suspiciousCount: vtResult.suspiciousCount,
+                    harmlessCount: vtResult.harmlessCount,
+                    undetectedCount: vtResult.undetectedCount,
+                    timeoutCount: vtResult.timeoutCount,
                     scanTime: vtResult.scanTime,
                   },
                 },
               },
             });
-            status = vtResult.status;
+            status = resolvedStatus;
+            source = resolvedSource;
           } else {
-            // VT has no record of this hash — any previously stored status is unverified.
-            // Reset to "unknown" so the dashboard doesn't falsely display "safe".
-            status = "unknown";
-            source = "Unknown";
-            await esClient.update({
-              index: getIndexName(),
-              id: doc._id,
-              body: { doc: { status: "unknown", source: "Unknown" } },
-            });
+            // Keep forced-malicious labels (blacklist/signature) even when VT has no record.
+            if (!(blacklistEntry?.active || doc._source?.source === "SignatureDB" || doc._source?.blacklist?.active === true)) {
+              status = "unknown";
+              source = "Unknown";
+              await esClient.update({
+                index: getIndexName(),
+                id: doc._id,
+                body: { doc: { status: "unknown", source: "Unknown" } },
+              });
+            }
           }
         }
 
@@ -718,17 +795,17 @@ const receiveAppData = async (req, res) => {
 
         }
 
-        if (Number.isFinite(existingDetectedEngines) && existingDetectedEngines >= 30) {
+        if (Number.isFinite(existingDetectedEngines) && existingDetectedEngines >= SOAR_TRIGGER_THRESHOLD) {
           const alreadyUploaded = isAlreadyUploadedFromDoc(doc._source);
           uploadTrigger = {
             required: !alreadyUploaded,
             queued: false,
             triggerType: !alreadyUploaded ? "apk_upload_request" : null,
-            threshold: 30,
+            threshold: SOAR_TRIGGER_THRESHOLD,
             detectedEngines: existingDetectedEngines,
             reason: alreadyUploaded
               ? "already_uploaded_today"
-              : "detected_30_plus",
+              : "detected_threshold_plus",
           };
 
           if (!alreadyUploaded) {
@@ -771,61 +848,77 @@ const receiveAppData = async (req, res) => {
           status = "malicious";
           source = "SignatureDB";
           console.log(`Detected malicious ${appType} app via SignatureDB: ${packageName}`);
-        } else {
-          // Check with VirusTotal for hash lookup - async, non-blocking
-          console.log(`🦠 Checking VirusTotal hash for ${appType} app: ${packageName}`);
-          const vtResult = await checkVirusTotal(sha256);
-          
-          if (vtResult && vtResult.status !== "unknown") {
+        }
+
+        // VT hash check must run regardless of blacklist/signature branch.
+        console.log(`🦠 Checking VirusTotal hash for ${appType} app: ${packageName}`);
+        const vtResult = await checkVirusTotal(sha256);
+
+        if (vtResult && vtResult.status !== "unknown") {
+          virusTotalHashCheck = {
+            detectionRatio: vtResult.detectionRatio,
+            totalEngines: vtResult.totalEngines,
+            detectedEngines: vtResult.detectedEngines,
+            maliciousCount: vtResult.maliciousCount,
+            suspiciousCount: vtResult.suspiciousCount,
+            harmlessCount: vtResult.harmlessCount,
+            undetectedCount: vtResult.undetectedCount,
+            timeoutCount: vtResult.timeoutCount,
+            scanTime: vtResult.scanTime,
+          };
+
+          // Only let VT set app status/source when app is not forced malicious by policy.
+          if (!(blacklistEntry && blacklistEntry.active) && !isHashMalicious(sha256)) {
             status = vtResult.status;
             source = "VirusTotal";
-            virusTotalHashCheck = {
+          }
+
+          console.log(`✅ VirusTotal hash check for ${appType} app ${packageName}: ${vtResult.status} (${vtResult.detectionRatio})`);
+
+          if (vtResult.detectedEngines >= 1) {
+            createNotification(esClient, {
+              appName: appName || packageName,
+              packageName,
+              sha256,
+              detectedEngines: vtResult.detectedEngines,
+              totalEngines: vtResult.totalEngines,
+              detectionRatio: vtResult.detectionRatio,
+            }).catch((err) => console.error("❌ Notification error:", err.message));
+          }
+
+          if (vtResult.detectedEngines >= SOAR_TRIGGER_THRESHOLD) {
+            const queued = await createAnalysisRequestFromHashCheck(esClient, {
+              appName: appName || packageName,
+              packageName,
+              sha256,
               detectionRatio: vtResult.detectionRatio,
               totalEngines: vtResult.totalEngines,
               detectedEngines: vtResult.detectedEngines,
-              scanTime: vtResult.scanTime
+              sourceIndex: getIndexName(),
+              sourceDate: new Date().toISOString().slice(0, 10),
+              alreadyUploaded: false,
+            });
+
+            uploadTrigger = {
+              required: true,
+              queued,
+              triggerType: "apk_upload_request",
+              threshold: SOAR_TRIGGER_THRESHOLD,
+              detectedEngines: vtResult.detectedEngines,
+              reason: queued
+                ? "detected_threshold_plus"
+                : "already_triggered_or_uploaded",
             };
-            console.log(`✅ VirusTotal hash check for ${appType} app ${packageName}: ${status} (${vtResult.detectionRatio})`);
-
-            // Send notification if engines detected (1-3: Suspicious, 4-29: Malicious, 30+: High Risk)
-            if (vtResult.detectedEngines >= 1) {
-              createNotification(esClient, {
-                appName: appName || packageName,
-                packageName,
-                sha256,
-                detectedEngines: vtResult.detectedEngines,
-                totalEngines: vtResult.totalEngines,
-                detectionRatio: vtResult.detectionRatio,
-              }).catch((err) => console.error("❌ Notification error:", err.message));
-
-            }
-
-            if (vtResult.detectedEngines >= 30) {
-              const queued = await createAnalysisRequestFromHashCheck(esClient, {
-                appName: appName || packageName,
-                packageName,
-                sha256,
-                detectionRatio: vtResult.detectionRatio,
-                totalEngines: vtResult.totalEngines,
-                detectedEngines: vtResult.detectedEngines,
-                sourceIndex: getIndexName(),
-                sourceDate: new Date().toISOString().slice(0, 10),
-                alreadyUploaded: false,
-              });
-
-              uploadTrigger = {
-                required: true,
-                queued,
-                triggerType: "apk_upload_request",
-                threshold: 30,
-                detectedEngines: vtResult.detectedEngines,
-                reason: queued
-                  ? "detected_30_plus"
-                  : "already_triggered_or_uploaded",
-              };
-            }
-          } else {
-            console.log(`ℹ️  VirusTotal: Hash not found for ${appType} app ${packageName}`);
+          }
+        } else {
+          console.log(`ℹ️  VirusTotal: Hash not found for ${appType} app ${packageName}`);
+          virusTotalHashCheck = {
+            detectionRatio: "0/0",
+            totalEngines: 0,
+            detectedEngines: 0,
+            scanTime: new Date().toISOString(),
+          };
+          if (!(blacklistEntry && blacklistEntry.active) && !isHashMalicious(sha256)) {
             status = "unknown";
             source = "Unknown";
           }
@@ -833,7 +926,7 @@ const receiveAppData = async (req, res) => {
 
         const dangerousPermissions = separateDangerousPermissions(permissions || []);
 
-        const shouldAutoPromoteToSoar = Number.isFinite(virusTotalHashCheck?.detectedEngines) && virusTotalHashCheck.detectedEngines >= 30;
+        const shouldAutoPromoteToSoar = Number.isFinite(virusTotalHashCheck?.detectedEngines) && virusTotalHashCheck.detectedEngines >= SOAR_TRIGGER_THRESHOLD;
 
         const docData = {
           appName,
@@ -881,9 +974,9 @@ const receiveAppData = async (req, res) => {
             required: false,
             queued: false,
             triggerType: "soar_auto_promoted",
-            threshold: 30,
+            threshold: SOAR_TRIGGER_THRESHOLD,
             detectedEngines: virusTotalHashCheck.detectedEngines,
-            reason: "detected_30_plus",
+            reason: "detected_threshold_plus",
           };
         }
         console.log(`📤 Indexed (${appType} App Scan) → ${packageName} (${status})`);
@@ -930,6 +1023,58 @@ const receiveAppData = async (req, res) => {
     return results;
   };
 
+  const ensureSoarCoverageForToday = async () => {
+    try {
+      const result = await esClient.search({
+        index: getIndexName(),
+        size: 1000,
+        query: { match_all: {} },
+      });
+
+      const hits = result.hits?.hits || [];
+      for (const hit of hits) {
+        const doc = hit._source || {};
+        const detectedEngines = getDetectedEnginesFromDoc(doc);
+        if (!Number.isFinite(detectedEngines) || detectedEngines < SOAR_TRIGGER_THRESHOLD) {
+          continue;
+        }
+
+        const detectionRatio =
+          doc?.virusTotalHashCheck?.detectionRatio ||
+          doc?.virusTotalAnalysis?.detectionRatio ||
+          "N/A";
+        const totalEngines =
+          doc?.virusTotalHashCheck?.totalEngines ||
+          doc?.virusTotalAnalysis?.totalEngines ||
+          0;
+        const alreadyUploaded = isAlreadyUploadedFromDoc(doc);
+
+        const queued = await createAnalysisRequestFromHashCheck(esClient, {
+          appName: doc.appName || doc.packageName,
+          packageName: doc.packageName,
+          sha256: doc.sha256,
+          detectionRatio,
+          totalEngines,
+          detectedEngines,
+          sourceIndex: getIndexName(),
+          sourceDate: new Date().toISOString().slice(0, 10),
+          alreadyUploaded,
+        });
+
+        if (queued && !alreadyUploaded) {
+          await esClient.update({
+            index: getIndexName(),
+            id: hit._id,
+            retry_on_conflict: 3,
+            body: { doc: buildSoarPromotionDoc(doc) },
+          });
+        }
+      }
+    } catch (err) {
+      console.error("❌ SOAR coverage sweep failed:", err.message);
+    }
+  };
+
   try {
     // Process user and system apps concurrently
     const [userResultsProcessing, systemResultsProcessing] = await Promise.all([
@@ -939,6 +1084,8 @@ const receiveAppData = async (req, res) => {
 
     userResults.push(...userResultsProcessing);
     systemResults.push(...systemResultsProcessing);
+
+    await ensureSoarCoverageForToday();
 
     const processingTimeMs = Date.now() - processingStartTime;
     console.log(`⏱️  Processing completed in ${processingTimeMs}ms for ${dedupedUser.length + dedupedSystem.length} apps`);

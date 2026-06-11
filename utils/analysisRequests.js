@@ -1,3 +1,5 @@
+const fs = require("fs");
+
 const getRequestsIndexName = () => {
   const today = new Date();
   const year = today.getFullYear();
@@ -14,8 +16,8 @@ const getTodayAppsIndexName = () => {
   return `mobile_apps_${day}-${month}-${year}`;
 };
 
-const APPS_INDEX_PATTERN = "mobile_apps_*";
 const REQUESTS_INDEX_PATTERN = "analysis_requests_*";
+const SOAR_TRIGGER_THRESHOLD = 30;
 
 const parseDetectionRatioNumerator = (ratio) => {
   if (!ratio || typeof ratio !== "string") {
@@ -44,7 +46,16 @@ const getHashCheckDetectedFromDoc = (doc) => {
 };
 
 const isAlreadyUploadedFromDoc = (doc) => {
-  return Boolean(doc?.apkFilePath) || Boolean(doc?.apkFileName) || Boolean(doc?.uploadId);
+  const filePath = doc?.apkFilePath;
+  if (!filePath || typeof filePath !== "string") {
+    return false;
+  }
+
+  try {
+    return fs.existsSync(filePath);
+  } catch (_) {
+    return false;
+  }
 };
 
 const hasUploadedApkForPackage = async (esClient, sourceIndex, packageName, sha256) => {
@@ -54,22 +65,23 @@ const hasUploadedApkForPackage = async (esClient, sourceIndex, packageName, sha2
 
   try {
     const identityShould = [];
-    if (packageName) {
-      identityShould.push({ term: { packageName: { value: packageName } } });
-    }
+    // Prefer exact hash identity to avoid package-level false positives.
     if (sha256) {
       identityShould.push({ term: { sha256: { value: sha256 } } });
+    } else if (packageName) {
+      identityShould.push({ term: { packageName: { value: packageName } } });
     }
 
     const candidateIndices = Array.from(
-      new Set([sourceIndex, getTodayAppsIndexName(), APPS_INDEX_PATTERN].filter(Boolean))
+      // Only current-day indices should decide whether re-upload is needed.
+      new Set([sourceIndex, getTodayAppsIndexName()].filter(Boolean))
     );
 
     for (const idx of candidateIndices) {
       try {
         const result = await esClient.search({
           index: idx,
-          size: 1,
+          size: 25,
           query: {
             bool: {
               filter: [
@@ -79,22 +91,15 @@ const hasUploadedApkForPackage = async (esClient, sourceIndex, packageName, sha2
                     minimum_should_match: 1,
                   },
                 },
-                {
-                  bool: {
-                    should: [
-                      { exists: { field: "apkFilePath" } },
-                      { exists: { field: "apkFileName" } },
-                      { exists: { field: "uploadId" } },
-                    ],
-                    minimum_should_match: 1,
-                  },
-                },
+                { exists: { field: "apkFilePath" } },
               ],
             },
           },
         });
 
-        if ((result.hits?.hits || []).length > 0) {
+        const hits = result.hits?.hits || [];
+        const hasLiveUpload = hits.some((hit) => isAlreadyUploadedFromDoc(hit?._source || {}));
+        if (hasLiveUpload) {
           return true;
         }
       } catch (err) {
@@ -117,9 +122,9 @@ const hasUploadedApkForPackage = async (esClient, sourceIndex, packageName, sha2
   }
 };
 
-const hasExistingAnalysisRequest = async (esClient, packageName, sha256) => {
+const findExistingAnalysisRequest = async (esClient, packageName, sha256) => {
   if (!esClient || (!packageName && !sha256)) {
-    return false;
+    return null;
   }
 
   const should = [];
@@ -136,7 +141,7 @@ const hasExistingAnalysisRequest = async (esClient, packageName, sha256) => {
 
   try {
     const result = await esClient.search({
-      index: REQUESTS_INDEX_PATTERN,
+      index: getRequestsIndexName(),
       size: 1,
       sort: [{ createdAt: { order: "desc", unmapped_type: "date" } }],
       query: {
@@ -148,13 +153,14 @@ const hasExistingAnalysisRequest = async (esClient, packageName, sha256) => {
       },
     });
 
-    return (result.hits?.hits || []).length > 0;
+    const hit = (result.hits?.hits || [])[0];
+    return hit || null;
   } catch (err) {
     if (err?.meta?.statusCode === 404) {
-      return false;
+      return null;
     }
     console.error("[ANALYSIS REQUEST] Failed to check duplicate SOAR request:", err.message);
-    return false;
+    return null;
   }
 };
 
@@ -197,9 +203,9 @@ const createAnalysisRequestFromHashCheck = async (esClient, payload) => {
     finalDetected,
   });
 
-  if (!Number.isFinite(finalDetected) || finalDetected < 30) {
+  if (!Number.isFinite(finalDetected) || finalDetected < SOAR_TRIGGER_THRESHOLD) {
     console.log(
-      `⚠️  [ANALYSIS REQUEST] Skipped - detected engines (${finalDetected}) < 30 threshold`
+      `⚠️  [ANALYSIS REQUEST] Skipped - detected engines (${finalDetected}) < ${SOAR_TRIGGER_THRESHOLD} threshold`
     );
     return false;
   }
@@ -224,16 +230,10 @@ const createAnalysisRequestFromHashCheck = async (esClient, payload) => {
     return false;
   }
 
-  const duplicateRequestExists = await hasExistingAnalysisRequest(esClient, packageName, sha256);
-  if (duplicateRequestExists) {
-    console.log(
-      `⚠️  [ANALYSIS REQUEST] Skipped - existing SOAR request already present for ${packageName || sha256}`
-    );
-    return false;
-  }
+  const existingRequestHit = await findExistingAnalysisRequest(esClient, packageName, sha256);
 
   const indexName = getRequestsIndexName();
-  const requestId = `vt_hash_req_${sha256}`;
+  const requestId = existingRequestHit?._id || `vt_hash_req_${sha256}`;
   const createdAt = new Date().toISOString();
   const soarId = `SOAR-${Date.now()}-${Math.random().toString(16).slice(2, 10).toUpperCase()}`;
   
@@ -262,6 +262,22 @@ const createAnalysisRequestFromHashCheck = async (esClient, payload) => {
     );
     console.log(`📌 Index: ${indexName}`);
     
+    if (existingRequestHit) {
+      await esClient.update({
+        index: indexName,
+        id: requestId,
+        body: {
+          doc: {
+            ...document,
+            refreshedAt: createdAt,
+          },
+          doc_as_upsert: true,
+        },
+      });
+      console.log(`🔄 [ANALYSIS REQUEST] Refreshed existing request for ${appName}`);
+      return true;
+    }
+
     await esClient.index({
       index: indexName,
       id: requestId,
@@ -296,6 +312,6 @@ module.exports = {
   getHashCheckDetectedFromDoc,
   isAlreadyUploadedFromDoc,
   hasUploadedApkForPackage,
-  hasExistingAnalysisRequest,
+  findExistingAnalysisRequest,
   createAnalysisRequestFromHashCheck,
 };

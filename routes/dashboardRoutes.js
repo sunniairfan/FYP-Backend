@@ -38,6 +38,62 @@ const dedupeDashboardApps = (apps = []) => {
     return Array.from(byKey.values());
 };
 
+const toFiniteNumber = (value) => {
+    if (value === null || value === undefined || value === '') return null;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+};
+
+const selectBestVirusTotalData = (app = {}) => {
+    const candidates = [app.virusTotalHashCheck, app.virusTotalAnalysis].filter(
+        (candidate) => candidate && typeof candidate === 'object'
+    );
+
+    if (!candidates.length) {
+        return {};
+    }
+
+    const scoreCandidate = (candidate = {}) => {
+        const totalEngines = toFiniteNumber(candidate.totalEngines) || 0;
+        const detectedEngines = toFiniteNumber(candidate.detectedEngines);
+        const hasRealData = totalEngines > 0 ? 1 : 0;
+        const detailFields = [
+            candidate.maliciousCount,
+            candidate.suspiciousCount,
+            candidate.harmlessCount,
+            candidate.undetectedCount,
+            candidate.timeoutCount,
+        ].filter((value) => toFiniteNumber(value) !== null).length;
+
+        return {
+            hasRealData,
+            detailFields,
+            totalEngines,
+            hasDetected: detectedEngines !== null ? 1 : 0,
+        };
+    };
+
+    return candidates.reduce((best, current) => {
+        if (!best) return current;
+        const bestScore = scoreCandidate(best);
+        const currentScore = scoreCandidate(current);
+
+        if (currentScore.hasRealData !== bestScore.hasRealData) {
+            return currentScore.hasRealData > bestScore.hasRealData ? current : best;
+        }
+        if (currentScore.detailFields !== bestScore.detailFields) {
+            return currentScore.detailFields > bestScore.detailFields ? current : best;
+        }
+        if (currentScore.totalEngines !== bestScore.totalEngines) {
+            return currentScore.totalEngines > bestScore.totalEngines ? current : best;
+        }
+        if (currentScore.hasDetected !== bestScore.hasDetected) {
+            return currentScore.hasDetected > bestScore.hasDetected ? current : best;
+        }
+        return best;
+    }, null) || {};
+};
+
 // Helper function to get dynamic index name
 const getIndexName = () => {
   const today = new Date();
@@ -86,8 +142,8 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
         const mappedApps = result.hits.hits.map((hit) => {
       const app = hit._source;
       
-      // Extract VirusTotal analysis data
-      const virusTotalData = app.virusTotalHashCheck || app.virusTotalAnalysis || {};
+    // Pick the richest VT payload so stale hash-check 0/0 does not mask real analysis data.
+    const virusTotalData = selectBestVirusTotalData(app);
       
       // Derive status purely from VirusTotal results
       const vtDetectedRaw = virusTotalData.detectedEngines ?? null;
@@ -127,6 +183,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
         ...app,
         _id: hit._id,
         id: hit._id,
+                primaryVirusTotalData: virusTotalData,
         // Map VirusTotal data to flat properties for easy access
         detectionRatio: virusTotalData.detectionRatio || 'N/A',
         totalEngines: virusTotalData.totalEngines || 'N/A',
@@ -242,6 +299,8 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
       suspicious: systemApps.filter(app => app.status === 'suspicious').length,
       unknown: systemApps.filter(app => app.status === 'unknown' || !app.status).length,
     };
+
+        const defaultAppType = userStats.total > 0 ? 'user' : 'system';
 
         const escapeHtmlAttr = (value) => String(value)
             .replace(/&/g, '&amp;')
@@ -1367,16 +1426,16 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
 
             <!-- App Type Filter -->
             <div class="app-type-filter">
-                <button id="userAppsBtn" class="filter-btn active" onclick="filterByAppType('user')">
+                <button id="userAppsBtn" class="filter-btn ${defaultAppType === 'user' ? 'active' : ''}" onclick="filterByAppType('user')">
                     <i class="fas fa-user"></i> User Apps (${userStats.total})
                 </button>
-                <button id="systemAppsBtn" class="filter-btn" onclick="filterByAppType('system')">
+                <button id="systemAppsBtn" class="filter-btn ${defaultAppType === 'system' ? 'active' : ''}" onclick="filterByAppType('system')">
                     <i class="fas fa-cog"></i> System Apps (${systemStats.total})
                 </button>
             </div>
 
             <!-- User Apps Stats -->
-            <div id="userAppsStatsContainer" class="app-type-stats visible">
+            <div id="userAppsStatsContainer" class="app-type-stats ${defaultAppType === 'user' ? 'visible' : 'hidden'}">
                 <div class="app-type-title">User Applications</div>
                 <div class="mini-stats">
                     <div class="mini-stat"><strong>Total:</strong> ${userStats.total}</div>
@@ -1388,7 +1447,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             </div>
 
             <!-- System Apps Stats -->
-            <div id="systemAppsStatsContainer" class="app-type-stats hidden">
+            <div id="systemAppsStatsContainer" class="app-type-stats ${defaultAppType === 'system' ? 'visible' : 'hidden'}">
                 <div class="app-type-title">System Applications</div>
                 <div class="mini-stats">
                     <div class="mini-stat"><strong>Total:</strong> ${systemStats.total}</div>
@@ -1437,7 +1496,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                                   // When VT is unknown, this ensures we show "unknown" even if ML has a prediction
                                   const displayStatus = app.vtDerivedStatus || app.status?.toLowerCase() || 'unknown';
                                   const displayLabel = displayStatus.charAt(0).toUpperCase() + displayStatus.slice(1);
-                                  const vtScore = app.vtDetectionRatio || 'N/A';
+                                  const vtScore = app.vtDetectionRatio || (app.blacklist?.active ? 'Blacklisted (no VT hash data)' : 'N/A');
                                   // Show ML badge when status is not safe (including unknown - to help SOC analysts)
                                   const showML = app.mlPredictionScore != null && displayStatus !== 'safe';
                                   return `<span class="status-badge status-${displayStatus}">${displayLabel}</span>
@@ -1454,7 +1513,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                         </div>
                     `).join('')}
                     ${systemApps.map(app => `
-                        <div class="app-row system-app hidden" data-app-type="system" data-device-id="${escapeHtmlAttr(app.device_id || '')}">
+                        <div class="app-row system-app" data-app-type="system" data-device-id="${escapeHtmlAttr(app.device_id || '')}">
                             <div>
                                 <div class="app-name">${app.appName || 'Unknown'}</div>
                                 ${app.blacklist?.active ? `<div class="blacklist-chip">Blacklisted${app.blacklist.firstBlacklistedAt ? ` since ${new Date(app.blacklist.firstBlacklistedAt).toLocaleDateString()}` : ''}</div>` : ''}
@@ -1474,7 +1533,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                                   // When VT is unknown, this ensures we show "unknown" even if ML has a prediction
                                   const displayStatus = app.vtDerivedStatus || app.status?.toLowerCase() || 'unknown';
                                   const displayLabel = displayStatus.charAt(0).toUpperCase() + displayStatus.slice(1);
-                                  const vtScore = app.vtDetectionRatio || 'N/A';
+                                  const vtScore = app.vtDetectionRatio || (app.blacklist?.active ? 'Blacklisted (no VT hash data)' : 'N/A');
                                   // Show ML badge when status is not safe (including unknown - to help SOC analysts)
                                   const showML = app.mlPredictionScore != null && displayStatus !== 'safe';
                                   return `<span class="status-badge status-${displayStatus}">${displayLabel}</span>
@@ -1625,7 +1684,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             window.location.href = '/dashboard?date=' + selectedDate;
         });
 
-        let currentAppType = 'user';
+        let currentAppType = '${defaultAppType}';
         let currentDeviceId = 'all';
 
         function applyCombinedFilters() {
@@ -1698,7 +1757,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                 const num = Number(value);
                 return Number.isFinite(num) ? num : null;
             };
-            const vtData = app.virusTotalHashCheck || app.virusTotalAnalysis || {};
+            const vtData = app.primaryVirusTotalData || app.virusTotalHashCheck || app.virusTotalAnalysis || {};
             const hasVtData = Object.keys(vtData).length > 0;
             const detectedEngines = toNumberOrNull(vtData.detectedEngines ?? app.detectedEngines);
             const totalEngines = toNumberOrNull(vtData.totalEngines ?? app.totalEngines);
@@ -1944,7 +2003,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             }
         }
 
-        applyCombinedFilters();
+        filterByAppType(currentAppType);
     </script>
 </body>
 </html>
@@ -2092,7 +2151,7 @@ router.get("/virustotal-report", requireAdminSession, async (req, res) => {
     // Calculate statistics
     const totalApps = apps.length;
     const scannedApps = apps.filter(app => {
-      const vtData = app.virusTotalHashCheck || app.virusTotalAnalysis || {};
+    const vtData = selectBestVirusTotalData(app);
       return vtData.totalEngines > 0;
     });
     
@@ -2103,7 +2162,7 @@ router.get("/virustotal-report", requireAdminSession, async (req, res) => {
 
     // Group apps by detection count
     const appsWithDetections = apps.filter(app => {
-      const vtData = app.virusTotalHashCheck || app.virusTotalAnalysis || {};
+    const vtData = selectBestVirusTotalData(app);
       return (vtData.detectedEngines || 0) > 0;
     }).sort((a, b) => {
       const aDetected = (a.virusTotalHashCheck || a.virusTotalAnalysis || {}).detectedEngines || 0;
@@ -2385,7 +2444,7 @@ router.get("/virustotal-report", requireAdminSession, async (req, res) => {
                 </thead>
                 <tbody>
                   ${appsWithDetections.map(app => {
-                    const vtData = app.virusTotalHashCheck || app.virusTotalAnalysis || {};
+                    const vtData = selectBestVirusTotalData(app);
                     const detected = vtData.detectedEngines || 0;
                     const total = vtData.totalEngines || 0;
                     const ratio = total > 0 ? `${detected}/${total}` : 'N/A';
@@ -2431,7 +2490,7 @@ router.get("/virustotal-report", requireAdminSession, async (req, res) => {
                 </thead>
                 <tbody>
                   ${apps.map(app => {
-                    const vtData = app.virusTotalHashCheck || app.virusTotalAnalysis || {};
+                    const vtData = selectBestVirusTotalData(app);
                     const detected = vtData.detectedEngines || 0;
                     const total = vtData.totalEngines || 0;
                     const ratio = total > 0 ? `${detected}/${total}` : 'Unknown';

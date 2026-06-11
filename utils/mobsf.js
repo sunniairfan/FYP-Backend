@@ -6,7 +6,7 @@ const http = require('http');
 
 // MobSF server URL and API key from environment variables or defaults
 const MOBSF_URL = process.env.MOBSF_URL || 'http://localhost:8000';
-const API_KEY = process.env.MOBSF_API_KEY || 'effd663508f219fcfa0a8b75287dc55e0f5967bdc10a229b1a309079a86e8904';
+const API_KEY = process.env.MOBSF_API_KEY || '409fe8b972d897e7d1682ac4677095f25cac08e6ca9c67cd6cba23e3b6ce1ad7';
 
 // Shared axios instance with HTTP keepalive — reuses TCP connections so each call
 // doesn't pay a fresh connection overhead (~100-300ms saved per request)
