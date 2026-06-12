@@ -6,7 +6,7 @@ const http = require('http');
 
 // MobSF server URL and API key from environment variables or defaults
 const MOBSF_URL = process.env.MOBSF_URL || 'http://localhost:8000';
-const API_KEY = process.env.MOBSF_API_KEY || '409fe8b972d897e7d1682ac4677095f25cac08e6ca9c67cd6cba23e3b6ce1ad7';
+const API_KEY = process.env.MOBSF_API_KEY || '757bc5b73adccded70757ba41af82d7863f15fa7ffe962185b185ffcd76e5fcd';
 
 // Shared axios instance with HTTP keepalive — reuses TCP connections so each call
 // doesn't pay a fresh connection overhead (~100-300ms saved per request)
@@ -216,6 +216,63 @@ async function getPdfReport(hash) {
     return response.data;
   } catch (error) {
     logError(`Failed to get PDF report for hash: ${hash}`, error);
+    throw error;
+  }
+}
+
+async function getDynamicPdfReport(hash) {
+  try {
+    log(`Fetching dynamic PDF report for hash: ${hash}`);
+
+    const params = new URLSearchParams();
+    params.append('hash', hash);
+
+    const endpoints = [
+      `${MOBSF_URL}/api/v1/dynamic/report_pdf`,
+      `${MOBSF_URL}/api/v1/dynamic/pdf`,
+    ];
+
+    let lastError = null;
+    for (const endpoint of endpoints) {
+      try {
+        log('Dynamic PDF report request details:', {
+          url: endpoint,
+          body: params.toString(),
+          headers: {
+            Authorization: '[HIDDEN]',
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        });
+
+        const response = await axiosInstance.post(
+          endpoint,
+          params,
+          {
+            headers: {
+              'Authorization': API_KEY,
+              'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            responseType: 'stream',
+            timeout: 120000
+          }
+        );
+
+        log('Dynamic PDF report stream created successfully');
+        response.data.on('error', (streamError) => {
+          logError('Dynamic PDF stream error', streamError);
+        });
+        return response.data;
+      } catch (error) {
+        lastError = error;
+        if (![404, 405].includes(error?.response?.status)) {
+          throw error;
+        }
+      }
+    }
+
+    throw lastError || new Error('MobSF dynamic PDF endpoint is unavailable');
+  } catch (error) {
+    logError(`Failed to get dynamic PDF report for hash: ${hash}`, error);
     throw error;
   }
 }
@@ -759,7 +816,7 @@ log("MobSF module loaded", {
   MOBSF_URL,
   API_KEY_SET: !!API_KEY,
   functions: [
-    'uploadToMobSF', 'scanWithMobSF', 'getJsonReport', 'getPdfReport',
+    'uploadToMobSF', 'scanWithMobSF', 'getJsonReport', 'getPdfReport', 'getDynamicPdfReport',
     'deleteScan', 'checkConnection', 'analyzeAppWithMobSF', 'testMobSFConnection',
     'getDynamicApps', 'startDynamicAnalysis', 'stopDynamicAnalysis', 'getDynamicReportJson',
     'mobsfyAndroid', 'installRootCA', 'setGlobalProxy', 'runTlsTests',
@@ -773,6 +830,7 @@ module.exports = {
   scanWithMobSF,
   getJsonReport,
   getPdfReport,
+  getDynamicPdfReport,
   deleteScan,
   checkConnection,
   findHashBySha256,

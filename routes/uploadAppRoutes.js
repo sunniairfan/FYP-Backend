@@ -37,6 +37,185 @@ function getIndexNameForDate(dateString) {
   return `mobile_apps_${day}-${month}-${year}`;
 }
 
+function normalizeMobSfTrackers(trackersPayload) {
+  if (!trackersPayload || typeof trackersPayload !== "object") {
+    return { count: 0, entries: [] };
+  }
+
+  const trackerDict =
+    trackersPayload.trackers && typeof trackersPayload.trackers === "object"
+      ? trackersPayload.trackers
+      : !Array.isArray(trackersPayload) && !("detected_trackers" in trackersPayload)
+        ? trackersPayload
+        : {};
+
+  const entries = Object.entries(trackerDict).filter(([name]) => {
+    return !["detected_trackers", "total_trackers", "runtime_dependencies"].includes(name);
+  });
+
+  const explicitCount = Number(
+    trackersPayload.detected_trackers ?? trackersPayload.total_trackers ?? entries.length
+  );
+
+  return {
+    count: Number.isFinite(explicitCount) ? explicitCount : entries.length,
+    entries,
+  };
+}
+
+async function mergeAppsWithSoarRequests(esClient, indexName, selectedDate, apps) {
+  try {
+    const requestResult = await esClient.search({
+      index: getRequestsIndexName(),
+      size: 200,
+      sort: [{ createdAt: { order: "desc", unmapped_type: "date" } }],
+      query: {
+        bool: {
+          filter: [
+            { term: { type: "apk_upload_request" } },
+            {
+              bool: {
+                should: [
+                  { term: { sourceIndex: indexName } },
+                  { term: { sourceDate: selectedDate } },
+                ],
+                minimum_should_match: 1,
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    const soarRequests = requestResult.hits.hits.map((hit) => hit._source || {});
+    const requestByPackage = new Map();
+    const requestBySha = new Map();
+
+    soarRequests.forEach((request) => {
+      if (request.packageName && !requestByPackage.has(request.packageName)) {
+        requestByPackage.set(request.packageName, request);
+      }
+      if (request.sha256 && !requestBySha.has(request.sha256)) {
+        requestBySha.set(request.sha256, request);
+      }
+    });
+
+    const enrichedApps = apps.map((app) => {
+      if (String(app.uploadSource || "").toUpperCase() === "SOAR" || app.soarTriggeredAt || app.soarId) {
+        return app;
+      }
+
+      const request = requestBySha.get(app.sha256) || requestByPackage.get(app.packageName);
+      if (!request) {
+        return app;
+      }
+
+      return {
+        ...app,
+        uploadSource: "SOAR",
+        soarTriggeredAt: request.createdAt || app.timestamp,
+        soarId: request.soarId || app.soarId || null,
+        soarRequestStatus: app.soarRequestStatus || "pending_upload",
+      };
+    });
+
+    const existingKeys = new Set();
+    enrichedApps.forEach((app) => {
+      if (app.sha256) existingKeys.add(`sha:${app.sha256}`);
+      if (app.packageName) existingKeys.add(`pkg:${app.packageName}`);
+    });
+
+    const pendingRequests = soarRequests.filter((request) => {
+      if (request.sha256 && existingKeys.has(`sha:${request.sha256}`)) return false;
+      if (request.packageName && existingKeys.has(`pkg:${request.packageName}`)) return false;
+      return true;
+    });
+
+    if (pendingRequests.length === 0) {
+      return enrichedApps;
+    }
+
+    const shouldClauses = [];
+    pendingRequests.forEach((request) => {
+      if (request.sha256) {
+        shouldClauses.push({ term: { sha256: { value: request.sha256 } } });
+      } else if (request.packageName) {
+        shouldClauses.push({ term: { packageName: { value: request.packageName } } });
+      }
+    });
+
+    const sourceBySha = new Map();
+    const sourceByPackage = new Map();
+
+    if (shouldClauses.length > 0) {
+      try {
+        const sourceResult = await esClient.search({
+          index: indexName,
+          size: pendingRequests.length * 2,
+          query: {
+            bool: {
+              should: shouldClauses,
+              minimum_should_match: 1,
+            },
+          },
+          sort: [{ timestamp: { order: "desc", unmapped_type: "date" } }],
+        });
+
+        sourceResult.hits.hits.forEach((hit) => {
+          const doc = { ...hit._source, id: hit._id };
+          if (doc.sha256 && !sourceBySha.has(doc.sha256)) {
+            sourceBySha.set(doc.sha256, doc);
+          }
+          if (doc.packageName && !sourceByPackage.has(doc.packageName)) {
+            sourceByPackage.set(doc.packageName, doc);
+          }
+        });
+      } catch (sourceError) {
+        if (sourceError?.meta?.statusCode !== 404) {
+          console.warn("[Apps Route] Failed to load source docs for SOAR requests:", sourceError.message);
+        }
+      }
+    }
+
+    const pendingApps = pendingRequests.map((request) => {
+      const sourceApp = sourceBySha.get(request.sha256) || sourceByPackage.get(request.packageName) || {};
+      return {
+        ...sourceApp,
+        id: sourceApp.id || `soar-request:${request.soarId || request.sha256 || request.packageName || Date.now()}`,
+        appName: sourceApp.appName || request.appName || "Unknown App",
+        packageName: sourceApp.packageName || request.packageName || "unknown",
+        sha256: sourceApp.sha256 || request.sha256 || "",
+        status: sourceApp.status || "unknown",
+        source: sourceApp.source || "VirusTotal",
+        timestamp: sourceApp.timestamp || request.createdAt,
+        uploadedByUser: Boolean(sourceApp.uploadedByUser),
+        uploadSource: "SOAR",
+        soarTriggeredAt: request.createdAt || sourceApp.soarTriggeredAt || sourceApp.timestamp,
+        soarId: request.soarId || sourceApp.soarId || null,
+        soarRequestStatus: sourceApp.soarRequestStatus || "pending_upload",
+        appType: sourceApp.appType || "user",
+        sizeMB: sourceApp.sizeMB || 0,
+        apkFilePath: sourceApp.apkFilePath || null,
+        apkFileName: sourceApp.apkFileName || null,
+        uploadId: sourceApp.uploadId || null,
+        virusTotalAnalysis: sourceApp.virusTotalAnalysis || null,
+        virusTotalHashCheck: sourceApp.virusTotalHashCheck || null,
+        mobsfAnalysis: sourceApp.mobsfAnalysis || null,
+        dynamicAnalysis: sourceApp.dynamicAnalysis || null,
+      };
+    });
+
+    return [...enrichedApps, ...pendingApps].sort((left, right) => {
+      return new Date(right.timestamp || 0).getTime() - new Date(left.timestamp || 0).getTime();
+    });
+  } catch (requestError) {
+    if (requestError?.meta?.statusCode !== 404) {
+      console.warn("[Apps Route] Failed to enrich SOAR metadata:", requestError.message);
+    }
+    return apps;
+  }
+}
+
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, "../uploads/apks");
 if (!fs.existsSync(uploadsDir)) {
@@ -1775,65 +1954,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
         id: hit._id,
         appType: hit._source.appType || 'system'
       }));
-
-      try {
-        const requestResult = await esClient.search({
-          index: getRequestsIndexName(),
-          size: 200,
-          sort: [{ createdAt: { order: "desc", unmapped_type: "date" } }],
-          query: {
-            bool: {
-              filter: [
-                { term: { type: "apk_upload_request" } },
-                {
-                  bool: {
-                    should: [
-                      { term: { sourceIndex: indexName } },
-                      { term: { sourceDate: selectedDate } },
-                    ],
-                    minimum_should_match: 1,
-                  },
-                },
-              ],
-            },
-          },
-        });
-
-        const soarRequests = requestResult.hits.hits.map((hit) => hit._source || {});
-        const requestByPackage = new Map();
-        const requestBySha = new Map();
-
-        soarRequests.forEach((request) => {
-          if (request.packageName && !requestByPackage.has(request.packageName)) {
-            requestByPackage.set(request.packageName, request);
-          }
-          if (request.sha256 && !requestBySha.has(request.sha256)) {
-            requestBySha.set(request.sha256, request);
-          }
-        });
-
-        apps = apps.map((app) => {
-          if (String(app.uploadSource || '').toUpperCase() === 'SOAR' || app.soarTriggeredAt || app.soarId) {
-            return app;
-          }
-
-          const request = requestBySha.get(app.sha256) || requestByPackage.get(app.packageName);
-          if (!request) {
-            return app;
-          }
-
-          return {
-            ...app,
-            uploadSource: 'SOAR',
-            soarTriggeredAt: request.createdAt || app.timestamp,
-            soarId: request.soarId || app.soarId || null,
-          };
-        });
-      } catch (requestError) {
-        if (requestError?.meta?.statusCode !== 404) {
-          console.warn("[Apps Route] Failed to enrich SOAR metadata:", requestError.message);
-        }
-      }
+      apps = await mergeAppsWithSoarRequests(esClient, indexName, selectedDate, apps);
     } catch (indexError) {
       console.log(`[Apps Route] Index ${indexName} not found or no data`);
     }
@@ -2953,6 +3074,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
         const hasVirusTotalAnalysis = app.virusTotalAnalysis && app.virusTotalAnalysis.detectionRatio;
         const hasDynamicAnalysis = app.dynamicAnalysis && app.dynamicAnalysis.status === 'completed';
         const hasApkFile = app.apkFilePath && app.apkFileName;
+        const isPendingSoarUpload = isSoarTriggered && !hasApkFile;
         const appType = app.appType || 'system';
         
         // Check if app has high detection (>30 detected engines)
@@ -3027,8 +3149,8 @@ router.get("/apps", requireWebAuth, async (req, res) => {
                 <!-- Static Analysis Column -->
                 <div class="analysis-col static-col">
                   <div class="col-title">Static Analysis</div>
-                  <button class="btn-mobsf" onclick="runMobsfAnalysis('${app.sha256}', '${app.packageName}', this)" title="Run MobSF Static Analysis">
-                    ${hasMobsfAnalysis ? "Re-analyze" : "Do Static"} Analysis
+                  <button class="btn-mobsf" ${isPendingSoarUpload ? 'disabled' : `onclick="runMobsfAnalysis('${app.sha256}', '${app.packageName}', this)"`} title="${isPendingSoarUpload ? 'SOAR request is pending APK upload' : 'Run MobSF Static Analysis'}">
+                    ${isPendingSoarUpload ? 'Pending APK Upload' : `${hasMobsfAnalysis ? "Re-analyze" : "Do Static"} Analysis`}
                   </button>
                   ${hasMobsfAnalysis ? `
                     <button class="btn-report" onclick="downloadMobsfReport('${app.sha256}')" title="Download MobSF PDF Report">
@@ -3043,13 +3165,10 @@ router.get("/apps", requireWebAuth, async (req, res) => {
                 <!-- Dynamic Analysis Column -->
                 <div class="analysis-col dynamic-col">
                   <div class="col-title">Dynamic Analysis</div>
-                  <button class="btn-dynamic" onclick="runDynamicAnalysis('${app.sha256}', '${app.packageName}', this)" title="Do Dynamic Analysis">
-                    ${hasDynamicAnalysis ? 'Re-run Dynamic Analysis' : 'Do Dynamic Analysis'}
+                  <button class="btn-dynamic" ${isPendingSoarUpload ? 'disabled' : `onclick="runDynamicAnalysis('${app.sha256}', '${app.packageName}', this)"`} title="${isPendingSoarUpload ? 'SOAR request is pending APK upload' : 'Do Dynamic Analysis'}">
+                    ${isPendingSoarUpload ? 'Pending APK Upload' : `${hasDynamicAnalysis ? 'Re-run Dynamic Analysis' : 'Do Dynamic Analysis'}`}
                   </button>
                   ${hasDynamicAnalysis ? `
-                    <button class="btn-report" onclick="downloadDynamicReport('${app.sha256}')" title="Download Dynamic Analysis PDF">
-                      Download Report
-                    </button>
                     <button class="btn-view" onclick="viewDynamicResults('${app.sha256}')" title="View Dynamic Analysis Results">
                       View Results
                     </button>
@@ -3447,12 +3566,6 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             window.location.href = url;
           }
 
-          function downloadDynamicReport(sha256) {
-            const selectedDate = document.getElementById('date-picker').value;
-            const url = getBasePath() + '/dynamic-report/' + sha256 + (selectedDate ? '?date=' + selectedDate : '');
-            window.location.href = url;
-          }
-
           function viewStaticResults(sha256) {
             const selectedDate = document.getElementById('date-picker').value;
             window.location.href = getBasePath() + '/static-results/' + sha256 + (selectedDate ? '?date=' + selectedDate : '');
@@ -3590,10 +3703,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
                         \${tls.tls_misconfigured !== undefined ? \`<span style="color:#94a3b8;">🔒 TLS:</span><span style="color:\${tls.tls_misconfigured ? '#ef4444' : '#10b981'}">\${tls.tls_misconfigured ? '⚠️ Misconfigured' : '✅ OK'}</span>\` : ''}
                       </div>
                     </div>
-                    <button onclick="downloadDynamicReport('\${sha256}')"
-                      style="background:#2563eb;color:white;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:12px;margin-bottom:8px;width:100%;">
-                      📄 Download Dynamic Analysis PDF
-                    </button>\`;
+                    \`;
                 }
 
                 if (btnEl) {
@@ -3953,9 +4063,16 @@ router.get("/list", async (req, res) => {
       ...hit._source,
     }));
 
+    const enrichedApps = await mergeAppsWithSoarRequests(
+      esClient,
+      dynamicIndex,
+      new Date().toISOString().split("T")[0],
+      apps
+    );
+
     res.status(200).json({
-      total: apps.length,
-      apps: apps,
+      total: enrichedApps.length,
+      apps: enrichedApps,
     });
   } catch (err) {
     console.error("Failed to fetch apps:", err.message);
@@ -4113,6 +4230,7 @@ router.post("/dynamic-analysis/:sha256", requireWebAuth, async (req, res) => {
     const networkFindings = dynReport.network_security || dynReport.exported_activities || [];
     const browsableActivities = dynReport.browsable_activities || [];
     const trackers = dynReport.trackers || {};
+    const normalizedTrackers = normalizeMobSfTrackers(trackers);
     const domains = dynReport.domains || {};
     const emails = dynReport.emails || [];
     const urls = dynReport.urls || [];
@@ -4180,7 +4298,7 @@ router.post("/dynamic-analysis/:sha256", requireWebAuth, async (req, res) => {
       // Traffic & behaviour
       network_security_issues: Array.isArray(networkSecurityIssues) ? networkSecurityIssues.length : 0,
       browsable_activities: Array.isArray(browsableActivities) ? browsableActivities.length : 0,
-      trackers: typeof trackers === "object" ? Object.keys(trackers).length : 0,
+      trackers: normalizedTrackers.count,
       domains_count: typeof domains === "object" ? Object.keys(domains).length : 0,
       emails_found: Array.isArray(emails) ? emails.length : 0,
       urls_found: Array.isArray(urls) ? urls.length : 0,
@@ -4275,8 +4393,8 @@ router.get("/dynamic-report/:sha256", requireWebAuth, async (req, res) => {
       return res.status(400).send("Dynamic analysis has not been completed for this app yet");
     }
 
-    console.log(`[Dynamic PDF] Fetching PDF for MD5: ${md5Hash}`);
-    const pdfStream = await mobsf.getPdfReport(md5Hash);
+    console.log(`[Dynamic PDF] Fetching dynamic PDF for MD5: ${md5Hash}`);
+    const pdfStream = await mobsf.getDynamicPdfReport(md5Hash);
 
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="dynamic_report_${sha256.substring(0, 8)}.pdf"`);
@@ -4422,12 +4540,8 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
     const domainsObj     = raw.domains || {};
     const domainList     = Object.entries(domainsObj);
     const trackersObj    = raw.trackers || {};
-    // MobSF may use: {detected_trackers:N, trackers:{name:{categories,url}}, total_trackers:N}
-    // OR just {name:{...}} flat dict
-    const trackerDict    = (trackersObj.trackers && typeof trackersObj.trackers === 'object')
-                             ? trackersObj.trackers
-                             : (typeof trackersObj === 'object' && !('detected_trackers' in trackersObj) ? trackersObj : {});
-    const trackerEntries = Object.entries(trackerDict);
+    const normalizedTrackers = normalizeMobSfTrackers(trackersObj);
+    const trackerEntries = normalizedTrackers.entries;
     const urlList        = Array.isArray(raw.urls) ? raw.urls : [];
     const emailList      = Array.isArray(raw.emails) ? raw.emails : [];
     const openRedirects  = Array.isArray(raw.open_redirect) ? raw.open_redirect : [];
@@ -4767,10 +4881,8 @@ router.get("/dynamic-results/:sha256", requireWebAuth, async (req, res) => {
     `<pre>${esc(JSON.stringify(apiCalls, null, 2).substring(0, 6000))}</pre>`}
   </div>` : ''}
 
-  <!-- ── Download ──────────────────────────────────────────────── -->
   <div style="text-align:center;padding:24px 0 8px">
-    <a class="dl-btn" href="/uploadapp/dynamic-report/${sha256}?date=${selectedDate}">📄 Download Full Dynamic Analysis PDF</a>
-    ${md5Hash ? `<br/><a href="${MOBSF}/dynamic_report/${md5Hash}" target="_blank" style="font-size:12px;color:#64748b;display:block;margin-top:10px">View original MobSF report ↗</a>` : ''}
+    ${md5Hash ? `<a href="${MOBSF}/dynamic_report/${md5Hash}" target="_blank" style="font-size:12px;color:#64748b;display:block;margin-top:10px">View original MobSF report ↗</a>` : ''}
   </div>
 
 </div>
