@@ -63,6 +63,60 @@ function normalizeMobSfTrackers(trackersPayload) {
   };
 }
 
+function toFiniteNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function extractDangerousPermissions(report = {}) {
+  const dangerousPermissions = [];
+  if (report.permissions && typeof report.permissions === "object") {
+    for (const [permName, permData] of Object.entries(report.permissions)) {
+      if (permData && permData.status === "dangerous") {
+        dangerousPermissions.push(permName);
+      }
+    }
+  }
+  return dangerousPermissions;
+}
+
+function isHighSeverityFinding(finding) {
+  const status = String(finding?.status ?? "").toLowerCase();
+  const severity = String(
+    finding?.metadata?.severity ??
+      finding?.severity ??
+      finding?.risk ??
+      finding?.level ??
+      ""
+  ).toLowerCase();
+  return status === "high" || severity === "high";
+}
+
+function countHighSeverityFromObjectMap(obj) {
+  if (!obj || typeof obj !== "object") return 0;
+  return Object.values(obj).filter((finding) => isHighSeverityFinding(finding)).length;
+}
+
+function countHighSeverityFromArray(list) {
+  if (!Array.isArray(list)) return 0;
+  return list.filter((finding) => isHighSeverityFinding(finding)).length;
+}
+
+function extractHighRiskFindings(report = {}) {
+  const explicitCount = Math.max(
+    toFiniteNumber(report.high_risk_findings, 0),
+    toFiniteNumber(report.appsec?.high_risk_findings, 0),
+    toFiniteNumber(report.appsec?.high_risk, 0),
+    toFiniteNumber(report.appsec?.high, 0)
+  );
+
+  const codeHigh = countHighSeverityFromObjectMap(report.code_analysis);
+  const manifestHigh = countHighSeverityFromArray(report.manifest_analysis);
+  const networkHigh = countHighSeverityFromArray(report.network_security);
+
+  return Math.max(explicitCount, codeHigh + manifestHigh + networkHigh);
+}
+
 async function mergeAppsWithSoarRequests(esClient, indexName, selectedDate, apps) {
   try {
     const requestResult = await esClient.search({
@@ -328,21 +382,8 @@ async function analyzeApp(sha256, esClient) {
     }
     console.log(`[MobSF Analysis] Report fetched successfully`);
 
-    const dangerousPermissions = [];
-    if (report.permissions && typeof report.permissions === "object") {
-      for (const [permName, permData] of Object.entries(report.permissions)) {
-        if (permData && permData.status === "dangerous") {
-          dangerousPermissions.push(permName);
-        }
-      }
-    }
-
-    let highRiskFindings = 0;
-    if (report.code_analysis && typeof report.code_analysis === "object") {
-      highRiskFindings = Object.entries(report.code_analysis).filter(
-        ([_, finding]) => finding && finding.metadata && finding.metadata.severity === "high"
-      ).length;
-    }
+    const dangerousPermissions = extractDangerousPermissions(report);
+    const highRiskFindings = extractHighRiskFindings(report);
 
     // MobSF provides security score in appsec.security_score field
     const securityScore = report.appsec?.security_score || report.security_score || 0;
@@ -717,7 +758,6 @@ router.get("/static-results/:sha256", requireWebAuth, async (req, res) => {
         ]);
         // Cache slim fields in ES so next load skips this entirely
         try {
-          const docId = searchRes.hits.hits[0]._id;
           const slim = {
             permissions: report.permissions,
             code_analysis: report.code_analysis,
@@ -743,20 +783,56 @@ router.get("/static-results/:sha256", requireWebAuth, async (req, res) => {
     }
     if (!report) report = {};
 
+    // Some older cached reports can miss manifest/network arrays.
+    // Refresh from MobSF once so severity aggregation remains complete.
+    const reportNeedsRefresh = Boolean(
+      report && (
+        !Array.isArray(report.manifest_analysis) ||
+        !Array.isArray(report.network_security)
+      )
+    );
+
+    if (reportNeedsRefresh && md5Hash) {
+      try {
+        const [freshReport, freshScore, freshTrackers] = await Promise.all([
+          mobsf.getJsonReport(md5Hash),
+          mobsf.getScorecard(md5Hash),
+          mobsf.getTrackers(md5Hash),
+        ]);
+
+        if (freshReport && typeof freshReport === "object") {
+          if (freshScore && !freshReport.appsec) freshReport.appsec = freshScore;
+          if (freshTrackers && !freshReport.trackers) {
+            freshReport.trackers = normalizeMobSfTrackers(freshTrackers);
+          }
+          report = freshReport;
+
+          try {
+            const slim = {
+              permissions: report.permissions,
+              code_analysis: report.code_analysis,
+              manifest_analysis: report.manifest_analysis,
+              network_security: report.network_security,
+              appsec: report.appsec,
+              trackers: report.trackers,
+              security_score: report.security_score,
+            };
+            await esClient.update({
+              index: indexName,
+              id: docId,
+              body: { doc: { mobsfReportJson: slim } },
+            });
+          } catch (_) {}
+        }
+      } catch (refreshErr) {
+        console.warn(`[static-results] fallback refresh failed for ${sha256}: ${refreshErr.message}`);
+      }
+    }
+
     // Build ms from live report if not stored in DB
     if (!ms && report && report.appsec) {
-      const dangerousPermissions = [];
-      if (report.permissions && typeof report.permissions === 'object') {
-        for (const [permName, permData] of Object.entries(report.permissions)) {
-          if (permData && permData.status === 'dangerous') dangerousPermissions.push(permName);
-        }
-      }
-      let highRiskFindings = 0;
-      if (report.code_analysis && typeof report.code_analysis === 'object') {
-        highRiskFindings = Object.entries(report.code_analysis).filter(
-          ([, f]) => f && f.metadata && f.metadata.severity === 'high'
-        ).length;
-      }
+      const dangerousPermissions = extractDangerousPermissions(report);
+      const highRiskFindings = extractHighRiskFindings(report);
       const securityScore = report.appsec?.security_score || report.security_score || 0;
       ms = {
         security_score: securityScore,
@@ -772,6 +848,20 @@ router.get("/static-results/:sha256", requireWebAuth, async (req, res) => {
     }
 
     const esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const normalizeSeverity = (entry) => {
+      const value = String(
+        entry?.metadata?.severity ??
+        entry?.severity ??
+        entry?.status ??
+        entry?.risk ??
+        entry?.level ??
+        entry?.stat ??
+        'info'
+      ).toLowerCase();
+      if (value === 'high') return 'high';
+      if (value === 'warning' || value === 'medium') return 'warning';
+      return 'info';
+    };
 
     // ── Score & verdict ────────────────────────────────────────────────────────
     const secScore  = ms.security_score ?? report.appsec?.security_score ?? 0;
@@ -791,19 +881,24 @@ router.get("/static-results/:sha256", requireWebAuth, async (req, res) => {
       id,
       title:    f?.metadata?.cwe || f?.metadata?.owasp || id,
       desc:     f?.metadata?.description || f?.description || '',
-      severity: (f?.metadata?.severity || f?.severity || 'info').toLowerCase(),
+      severity: normalizeSeverity(f),
       ref:      f?.metadata?.ref || '',
       files:    Array.isArray(f?.files) ? f.files : []
     }));
-    const highFindings = codeFindings.filter(f => f.severity === 'high');
-    const warnFindings = codeFindings.filter(f => f.severity === 'warning' || f.severity === 'medium');
-    const infoFindings = codeFindings.filter(f => f.severity === 'info' || f.severity === 'low');
+    const warnFindings = codeFindings.filter(f => f.severity === 'warning');
+    const infoFindings = codeFindings.filter(f => f.severity === 'info');
 
     // ── Manifest analysis ──────────────────────────────────────────────────────
     const manifestArr = Array.isArray(report.manifest_analysis) ? report.manifest_analysis : [];
 
     // ── Network security ───────────────────────────────────────────────────────
     const netArr = Array.isArray(report.network_security) ? report.network_security : [];
+    const manifestWarnCount = manifestArr.filter((m) => normalizeSeverity(m) === 'warning').length;
+    const networkWarnCount = netArr.filter((n) => normalizeSeverity(n) === 'warning').length;
+    const manifestInfoCount = manifestArr.filter((m) => normalizeSeverity(m) === 'info').length;
+    const networkInfoCount = netArr.filter((n) => normalizeSeverity(n) === 'info').length;
+    const totalWarnFindings = warnFindings.length + manifestWarnCount + networkWarnCount;
+    const totalInfoFindings = infoFindings.length + manifestInfoCount + networkInfoCount;
 
     // ── App metadata ───────────────────────────────────────────────────────────
     const appName   = esc(appData.appName || report.app_name || 'Unknown');
@@ -812,7 +907,7 @@ router.get("/static-results/:sha256", requireWebAuth, async (req, res) => {
     const verCode   = esc(report.version_code || 'N/A');
     const minSdk    = esc(report.min_sdk  || 'N/A');
     const targSdk   = esc(report.target_sdk || 'N/A');
-    const fileSize  = appData.sizeMB ? `${Number(appData.sizeMB).toFixed(2)} MB` : (report.size || 'N/A');
+    const fileSize  = Number.isFinite(Number(appData.sizeMB)) ? `${Number(appData.sizeMB).toFixed(2)} MB` : (report.size || 'N/A');
     const scanDate  = appData.lastMobsfAnalysis ? new Date(appData.lastMobsfAnalysis).toLocaleString() : 'N/A';
 
     // ── Severity badge helper ──────────────────────────────────────────────────
@@ -851,7 +946,7 @@ router.get("/static-results/:sha256", requireWebAuth, async (req, res) => {
     .score-label{font-size:20px;font-weight:700;letter-spacing:.04em;margin-top:4px}
     .score-desc{font-size:13px;line-height:1.6;flex:1;min-width:200px}
     /* Stats grid */
-    .stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+    .stats-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
     .stat-card{background:#05090f;border:1px solid #1a2332;border-radius:10px;padding:14px;text-align:center}
     .stat-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
     .stat-val{font-size:26px;font-weight:700;line-height:1}
@@ -888,7 +983,8 @@ router.get("/static-results/:sha256", requireWebAuth, async (req, res) => {
     .dl-btn:hover{opacity:.88;text-decoration:none}
     .ext-btn{display:inline-flex;align-items:center;gap:7px;padding:10px 22px;background:#0f2040;border:1px solid #1d4ed8;color:#60a5fa;border-radius:9px;font-size:13px;font-weight:600;transition:background .2s}
     .ext-btn:hover{background:#1e3a5f;text-decoration:none}
-    @media(max-width:600px){.stats-grid{grid-template-columns:repeat(2,1fr)}.score-banner{flex-direction:column}}
+    @media(max-width:900px){.stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:600px){.stats-grid{grid-template-columns:1fr}.score-banner{flex-direction:column}}
   </style>
 </head>
 <body>
@@ -929,13 +1025,9 @@ router.get("/static-results/:sha256", requireWebAuth, async (req, res) => {
     </div>
     <div class="stats-grid">
       <div class="stat-card"><div class="stat-label">Security Score</div><div class="stat-val" style="color:${scoreColor}">${secScore}/100</div></div>
-      <div class="stat-card"><div class="stat-label">High Risk</div><div class="stat-val" style="color:${highFindings.length>0?'#ef4444':'#22c55e'}">${highFindings.length}</div></div>
-      <div class="stat-card"><div class="stat-label">Warnings</div><div class="stat-val" style="color:${warnFindings.length>0?'#f59e0b':'#22c55e'}">${warnFindings.length}</div></div>
-      <div class="stat-card"><div class="stat-label">Info</div><div class="stat-val" style="color:#94a3b8">${infoFindings.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Info</div><div class="stat-val" style="color:#94a3b8">${totalInfoFindings}</div></div>
       <div class="stat-card"><div class="stat-label">Dangerous Perms</div><div class="stat-val" style="color:${dangerousPerms.length>0?'#ef4444':'#22c55e'}">${dangerousPerms.length}</div></div>
       <div class="stat-card"><div class="stat-label">Total Perms</div><div class="stat-val" style="color:#3b82f6">${allPerms.length}</div></div>
-      <div class="stat-card"><div class="stat-label">Manifest Issues</div><div class="stat-val" style="color:${manifestArr.length>0?'#f59e0b':'#22c55e'}">${manifestArr.length}</div></div>
-      <div class="stat-card"><div class="stat-label">Network Issues</div><div class="stat-val" style="color:${netArr.length>0?'#f59e0b':'#22c55e'}">${netArr.length}</div></div>
     </div>
   </div>
 
@@ -994,31 +1086,11 @@ router.get("/static-results/:sha256", requireWebAuth, async (req, res) => {
     <div class="sec-hdr">
       <div class="sec-icon">🔍</div>
       <div class="sec-title">Code Analysis</div>
-      <div class="sec-count">${codeFindings.length} findings</div>
+      <div class="sec-count">${infoFindings.length} findings</div>
     </div>
-    ${codeFindings.length === 0
+    ${infoFindings.length === 0
       ? '<p class="empty">No code analysis findings.</p>'
-      : `${highFindings.length > 0 ? `
-        <div style="margin-bottom:12px">
-          <div style="font-size:11px;font-weight:600;color:#ef4444;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">🔴 High Severity (${highFindings.length})</div>
-          ${highFindings.map(f => `
-            <div class="finding" style="border-color:#7f1d1d">
-              <div class="finding-title">${sevBadge(f.severity)} ${esc(f.title)}</div>
-              <div class="finding-desc">${esc(f.desc)}</div>
-              ${f.files.length > 0 ? `<div class="finding-files">📁 ${f.files.slice(0,3).map(x => esc(typeof x === 'object' ? x.file_path || JSON.stringify(x) : x)).join(' &nbsp;·&nbsp; ')}${f.files.length > 3 ? ` +${f.files.length - 3} more` : ''}</div>` : ''}
-            </div>`).join('')}
-        </div>` : ''}
-        ${warnFindings.length > 0 ? `
-        <details ${highFindings.length === 0 ? 'open' : ''}>
-          <summary>🟡 Warnings (${warnFindings.length})</summary>
-          ${warnFindings.map(f => `
-            <div class="finding">
-              <div class="finding-title">${sevBadge(f.severity)} ${esc(f.title)}</div>
-              <div class="finding-desc">${esc(f.desc)}</div>
-              ${f.files.length > 0 ? `<div class="finding-files">📁 ${f.files.slice(0,3).map(x => esc(typeof x === 'object' ? x.file_path || JSON.stringify(x) : x)).join(' &nbsp;·&nbsp; ')}${f.files.length > 3 ? ` +${f.files.length - 3} more` : ''}</div>` : ''}
-            </div>`).join('')}
-        </details>` : ''}
-        ${infoFindings.length > 0 ? `
+      : `${infoFindings.length > 0 ? `
         <details>
           <summary>ℹ️ Informational (${infoFindings.length})</summary>
           ${infoFindings.map(f => `
@@ -1041,7 +1113,7 @@ router.get("/static-results/:sha256", requireWebAuth, async (req, res) => {
     <div class="tbl-wrap"><table>
       <thead><tr><th>Issue</th><th>Severity</th><th>Description</th></tr></thead>
       <tbody>${manifestArr.map(m => {
-        const sev = (m?.severity || m?.stat || 'info').toLowerCase();
+        const sev = normalizeSeverity(m);
         const title = m?.title || m?.rule || m?.name || 'Manifest Issue';
         const desc  = m?.description || m?.desc || '';
         return `<tr>
@@ -1064,7 +1136,7 @@ router.get("/static-results/:sha256", requireWebAuth, async (req, res) => {
     <div class="tbl-wrap"><table>
       <thead><tr><th>Issue</th><th>Severity</th><th>Description</th></tr></thead>
       <tbody>${netArr.map(n => {
-        const sev = (n?.severity || n?.stat || 'info').toLowerCase();
+        const sev = normalizeSeverity(n);
         const title = n?.title || n?.name || 'Network Issue';
         const desc  = n?.description || n?.desc || '';
         return `<tr>
@@ -1443,7 +1515,7 @@ router.get("/virustotal-results/:sha256", requireWebAuth, async (req, res) => {
     ${vt.md5   ? `<div class="info-row"><span class="info-lbl">MD5</span><span class="info-val">${esc(vt.md5)}</span></div>` : ''}
     ${vt.sha1  ? `<div class="info-row"><span class="info-lbl">SHA-1</span><span class="info-val">${esc(vt.sha1)}</span></div>` : ''}
     ${vt.ssdeep? `<div class="info-row"><span class="info-lbl">SSDeep (fuzzy hash)</span><span class="info-val">${esc(vt.ssdeep)}</span></div>` : ''}
-    <div class="info-row"><span class="info-lbl">File Size</span><span class="info-val">${appData.sizeMB ? appData.sizeMB.toFixed(2) + ' MB' : (appData.fileSize ? (appData.fileSize/1024/1024).toFixed(2) + ' MB' : 'N/A')}</span></div>
+    <div class="info-row"><span class="info-lbl">File Size</span><span class="info-val">${Number.isFinite(Number(appData.sizeMB)) ? Number(appData.sizeMB).toFixed(2) + ' MB' : (Number.isFinite(Number(appData.fileSize)) ? (Number(appData.fileSize)/1024/1024).toFixed(2) + ' MB' : 'N/A')}</span></div>
     ${vt.fileType  ? `<div class="info-row"><span class="info-lbl">File Type</span><span class="info-val">${esc(vt.fileType)}</span></div>` : ''}
     ${vt.fileMagic ? `<div class="info-row"><span class="info-lbl">Magic Bytes</span><span class="info-val">${esc(vt.fileMagic)}</span></div>` : ''}
     ${vt.firstSubmitted ? `<div class="info-row"><span class="info-lbl">First Seen on VT</span><span class="info-val">${new Date(vt.firstSubmitted).toLocaleString()}</span></div>` : ''}
@@ -1738,7 +1810,7 @@ router.get("/results/:sha256", requireWebAuth, async (req, res) => {
         </div>
         <div class="meta-item">
           <div class="meta-label">File Size</div>
-          <div class="meta-value">${app.sizeMB?.toFixed(2) || 0} MB</div>
+          <div class="meta-value">${Number.isFinite(Number(app.sizeMB)) ? Number(app.sizeMB).toFixed(2) : 0} MB</div>
         </div>
         <div class="meta-item">
           <div class="meta-label">Source</div>
@@ -1801,10 +1873,6 @@ router.get("/results/:sha256", requireWebAuth, async (req, res) => {
             <div class="metric">
               <div class="metric-label">Dangerous Permissions</div>
               <div class="metric-value" style="color: #f59e0b;">${app.mobsfAnalysis.dangerous_permissions?.length || 0}</div>
-            </div>
-            <div class="metric">
-              <div class="metric-label">High Risk Findings</div>
-              <div class="metric-value" style="color: #ef4444;">${app.mobsfAnalysis.high_risk_findings || 0}</div>
             </div>
             ${app.mobsfAnalysis.scan_type ? `
               <div class="metric">
@@ -3104,7 +3172,7 @@ router.get("/apps", requireWebAuth, async (req, res) => {
             </td>
             <td>
               <div class="file-info">${fileInfo}</div>
-              <div class="file-info">${app.sizeMB?.toFixed(1) || 0} MB</div>
+              <div class="file-info">${Number.isFinite(Number(app.sizeMB)) ? Number(app.sizeMB).toFixed(1) : 0} MB</div>
               ${app.uploadId ? `<div class="upload-ref">ID: ${escapeHtmlAttr(app.uploadId)}</div>` : ''}
             </td>
             <td>
@@ -3122,7 +3190,6 @@ router.get("/apps", requireWebAuth, async (req, res) => {
                 </div>
                 <div class="mobsf-info" style="font-size: 10px;">
                   ${app.mobsfAnalysis.dangerous_permissions?.length > 0 ? `${app.mobsfAnalysis.dangerous_permissions.length} dangerous perms` : ""}
-                  ${app.mobsfAnalysis.high_risk_findings > 0 ? `| ${app.mobsfAnalysis.high_risk_findings} risks` : ""}
                 </div>
               ` : ""}
               ${hasVirusTotalAnalysis ? `
@@ -3410,7 +3477,6 @@ router.get("/apps", requireWebAuth, async (req, res) => {
                       ✅ Static analysis completed!
                       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;text-align:left;">
                         <span style="color:#94a3b8;">🔐 Security Score:</span><span style="color:\${scoreColor};font-weight:700;">\${a.security_score ?? 'N/A'}/100</span>
-                        <span style="color:#94a3b8;">⚠️ High-Risk:</span><span style="color:#e2e8f0;">\${a.high_risk_findings ?? 0} findings</span>
                         <span style="color:#94a3b8;">🚫 Dangerous Perms:</span><span style="color:#e2e8f0;">\${Array.isArray(a.dangerous_permissions) ? a.dangerous_permissions.length : 0}</span>
                         <span style="color:#94a3b8;">📦 Scan Type:</span><span style="color:#e2e8f0;">\${a.scan_type || 'apk'}</span>
                       </div>

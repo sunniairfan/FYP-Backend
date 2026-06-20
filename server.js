@@ -134,6 +134,7 @@ app.use("/", authRoutes);
 app.use("/api/app", appRoutes); // Mobile API routes 
 app.use("/api/notifications", notificationRoutes); // Notifications API
 app.use("/api/analysis-requests", analysisRequestRoutes); // Hash-check analysis requests
+app.use("/api/block-upload/auto-upload-requests", analysisRequestRoutes); // Backward-compatible auto-upload requests API
 app.use("/dashboard", dashboardRoutes); // Web dashboard routes
 app.use("/uploadapp", uploadAppRoutes); // Upload app routes 
 app.use("/results", resultsRoutes); // Analysis results page routes

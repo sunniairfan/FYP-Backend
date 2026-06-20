@@ -1487,7 +1487,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                                 <div class="app-meta">Device: ${app.device_id || 'N/A'}</div>
                             </div>
                             <div>
-                                <div class="app-meta">Size: ${app.sizeMB ? app.sizeMB.toFixed(2) + ' MB' : (app.fileSize ? (app.fileSize / (1024 * 1024)).toFixed(2) + ' MB' : 'N/A')}</div>
+                                <div class="app-meta">Size: ${app.sizeMB ? (Number.isFinite(Number(app.sizeMB)) ? Number(app.sizeMB).toFixed(2) + ' MB' : 'N/A') : (app.fileSize ? (Number.isFinite(Number(app.fileSize)) ? (Number(app.fileSize) / (1024 * 1024)).toFixed(2) + ' MB' : 'N/A') : 'N/A')}</div>
                                 <div class="app-meta">Hash: ${app.sha256 ? app.sha256.substring(0, 16) + '...' : 'N/A'}</div>
                             </div>
                                                         <div class="status-analysis-cell">
@@ -1524,7 +1524,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                                 <div class="app-meta">Device: ${app.device_id || 'N/A'}</div>
                             </div>
                             <div>
-                                <div class="app-meta">Size: ${app.sizeMB ? app.sizeMB.toFixed(2) + ' MB' : (app.fileSize ? (app.fileSize / (1024 * 1024)).toFixed(2) + ' MB' : 'N/A')}</div>
+                                <div class="app-meta">Size: ${app.sizeMB ? (Number.isFinite(Number(app.sizeMB)) ? Number(app.sizeMB).toFixed(2) + ' MB' : 'N/A') : (app.fileSize ? (Number.isFinite(Number(app.fileSize)) ? (Number(app.fileSize) / (1024 * 1024)).toFixed(2) + ' MB' : 'N/A') : 'N/A')}</div>
                                 <div class="app-meta">Hash: ${app.sha256 ? app.sha256.substring(0, 16) + '...' : 'N/A'}</div>
                             </div>
                             <div class="status-analysis-cell">
@@ -1780,7 +1780,7 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
             html += '<div class="detail-row"><div class="detail-label">App Name:</div><div class="detail-value">' + (app.appName || 'N/A') + '</div></div>';
             html += '<div class="detail-row"><div class="detail-label">Package Name:</div><div class="detail-value">' + (app.packageName || 'N/A') + '</div></div>';
             html += '<div class="detail-row"><div class="detail-label">App Type:</div><div class="detail-value">' + (app.appType || 'N/A') + '</div></div>';
-            html += '<div class="detail-row"><div class="detail-label">Size:</div><div class="detail-value">' + (app.fileSize ? (app.fileSize / (1024 * 1024)).toFixed(2) + ' MB' : (app.sizeMB ? app.sizeMB.toFixed(2) + ' MB' : 'N/A')) + '</div></div>';
+            html += '<div class="detail-row"><div class="detail-label">Size:</div><div class="detail-value">' + (app.fileSize ? (Number.isFinite(Number(app.fileSize)) ? (Number(app.fileSize) / (1024 * 1024)).toFixed(2) + ' MB' : 'N/A') : (app.sizeMB ? (Number.isFinite(Number(app.sizeMB)) ? Number(app.sizeMB).toFixed(2) + ' MB' : 'N/A') : 'N/A')) + '</div></div>';
             html += '<div class="detail-row"><div class="detail-label">SHA-256:</div><div class="detail-value" style="word-break: break-all; font-family: monospace; font-size: 11px;">' + (app.sha256 || 'N/A') + '</div></div>';
             html += '<div class="detail-row"><div class="detail-label">Uploaded By User:</div><div class="detail-value">' + (app.uploadedByUser ? 'Yes' : 'No') + '</div></div>';
             if (app.uploadedByUser && app.uploadId) {
@@ -1829,7 +1829,6 @@ router.get('/', requireAdminSession, async (req, res) => {  // Changed from '/da
                 html += '<h3 style="color: #60a5fa; border-bottom: 1px solid #1d3557; padding-bottom: 8px; margin-top: 20px; margin-bottom: 10px;">Static Analysis</h3>';
                 html += '<div class="detail-row"><div class="detail-label">Security Score:</div><div class="detail-value"><strong style="font-size:18px;color:' + ssColor + ';">' + (ms.security_score ?? 'N/A') + '/100</strong></div></div>';
                 html += '<div class="detail-row"><div class="detail-label">Scan Type:</div><div class="detail-value">' + (ms.scan_type || app.mobsfScanType || 'N/A') + '</div></div>';
-                html += '<div class="detail-row"><div class="detail-label">High Risk Findings:</div><div class="detail-value" style="color:' + (highRiskFindings > 0 ? '#ef4444' : '#10b981') + ';">' + highRiskFindings + '</div></div>';
                 html += '<div class="detail-row"><div class="detail-label">Manifest Findings:</div><div class="detail-value">' + totalManifestFindings + ' total &mdash; High: <span style="color:' + (ms.dynamic_analysis?.high_manifest_issues > 0 ? '#ef4444' : '#10b981') + ';">' + (ms.dynamic_analysis?.high_manifest_issues ?? 0) + '</span>, Warning: ' + (ms.dynamic_analysis?.warn_manifest_issues ?? 0) + '</div></div>';
                 html += '<div class="detail-row"><div class="detail-label">Network Findings:</div><div class="detail-value">' + totalNetworkFindings + ' total &mdash; High: <span style="color:' + (ms.dynamic_analysis?.high_network_issues > 0 ? '#ef4444' : '#10b981') + ';">' + (ms.dynamic_analysis?.high_network_issues ?? 0) + '</span></div></div>';
                 html += '<div class="detail-row"><div class="detail-label">Dangerous Permissions:</div><div class="detail-value" style="color:' + (effectiveDangerousPermissionCount > 0 ? '#f59e0b' : '#10b981') + ';">' + effectiveDangerousPermissionCount + '</div></div>';
@@ -2391,7 +2390,6 @@ router.get("/virustotal-report", requireAdminSession, async (req, res) => {
       <body>
         <div class="container">
           <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
-          <button onclick="window.print()" class="print-btn"><i class="fas fa-print"></i> Print Report</button>
           
           <div class="header">
             <h1><i class="fas fa-shield-virus"></i> VirusTotal Threat Intelligence Report</h1>
@@ -2451,7 +2449,7 @@ router.get("/virustotal-report", requireAdminSession, async (req, res) => {
                     const ratioClass = detected === 0 ? 'detection-low' : detected < 4 ? 'detection-medium' : 'detection-high';
                     // Always use device scan_time (current) over vtData.scanTime (historical)
                     const scanTime = app.scan_time || app.scanTime || vtData.scanTime;
-                    const formattedTime = scanTime ? new Date(scanTime).toLocaleString() : 'N/A';
+                    const formattedTime = scanTime ? new Date(scanTime).toLocaleDateString() : 'N/A';
                     const vtUrl = app.sha256 ? `https://www.virustotal.com/gui/file/${app.sha256}` : '#';
                     
                     return `
@@ -2497,7 +2495,7 @@ router.get("/virustotal-report", requireAdminSession, async (req, res) => {
                     const ratioClass = detected === 0 ? 'detection-low' : detected < 4 ? 'detection-medium' : 'detection-high';
                     // Always use device scan_time (current) over vtData.scanTime (historical)
                     const scanTime = app.scan_time || app.scanTime || vtData.scanTime;
-                    const formattedTime = scanTime ? new Date(scanTime).toLocaleString() : 'N/A';
+                    const formattedTime = scanTime ? new Date(scanTime).toLocaleDateString() : 'N/A';
                     
                     return `
                       <tr>

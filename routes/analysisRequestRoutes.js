@@ -136,4 +136,104 @@ router.get("/", async (req, res) => {
   }
 });
 
+router.put("/:requestId", async (req, res) => {
+  const esClient = req.app.get("esClient");
+  const { requestId } = req.params;
+  const requestsIndex = getRequestsIndexName();
+  const todayAppsIndex = getTodayAppsIndex();
+
+  if (!requestId) {
+    return res.status(400).json({ success: false, error: "requestId is required" });
+  }
+
+  const incomingStatus = String(req.body?.status || "").trim();
+  if (!incomingStatus) {
+    return res.status(400).json({ success: false, error: "status is required" });
+  }
+
+  const requestPatch = {
+    status: incomingStatus,
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (typeof req.body?.message === "string" && req.body.message.trim()) {
+    requestPatch.message = req.body.message.trim();
+  }
+  if (typeof req.body?.error === "string" && req.body.error.trim()) {
+    requestPatch.error = req.body.error.trim();
+  }
+
+  try {
+    const updateResp = await esClient.update({
+      index: requestsIndex,
+      id: requestId,
+      body: { doc: requestPatch },
+      refresh: "wait_for",
+    });
+
+    let requestDoc = null;
+    try {
+      const requestGet = await esClient.get({ index: requestsIndex, id: requestId });
+      requestDoc = requestGet?._source || null;
+    } catch (_) {}
+
+    if (requestDoc?.packageName || requestDoc?.sha256) {
+      const statusMap = {
+        pending: "pending_upload",
+        in_progress: "upload_in_progress",
+        completed: "uploaded",
+        failed: "upload_failed",
+      };
+      const soarRequestStatus = statusMap[incomingStatus] || incomingStatus;
+
+      const identityShould = [];
+      if (requestDoc.sha256) {
+        identityShould.push({ term: { sha256: { value: requestDoc.sha256 } } });
+      }
+      if (requestDoc.packageName) {
+        identityShould.push({ term: { packageName: { value: requestDoc.packageName } } });
+      }
+
+      if (identityShould.length > 0) {
+        await esClient.updateByQuery({
+          index: todayAppsIndex,
+          conflicts: "proceed",
+          query: {
+            bool: {
+              should: identityShould,
+              minimum_should_match: 1,
+            },
+          },
+          script: {
+            lang: "painless",
+            source: `
+              ctx._source.uploadSource = 'SOAR';
+              ctx._source.soarRequestStatus = params.soarRequestStatus;
+              ctx._source.soarActionUpdatedAt = params.updatedAt;
+            `,
+            params: {
+              soarRequestStatus,
+              updatedAt: requestPatch.updatedAt,
+            },
+          },
+          refresh: true,
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Analysis request ${incomingStatus}`,
+      requestId,
+      result: updateResp?.result || "updated",
+    });
+  } catch (err) {
+    if (err?.meta?.statusCode === 404) {
+      return res.status(404).json({ success: false, error: "Analysis request not found" });
+    }
+    console.error("Analysis request update error:", err.message);
+    return res.status(500).json({ success: false, error: "Failed to update analysis request" });
+  }
+});
+
 module.exports = router;

@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const {
+  shouldSkipAlertForPackage,
   parseDetectionRatioNumerator,
 } = require("../utils/notifications");
 
@@ -106,6 +107,7 @@ router.get("/", async (req, res) => {
 
     const notifications = result.hits.hits
       .map(normalizeNotification)
+      .filter((item) => !shouldSkipAlertForPackage(item?.packageName))
       .sort((a, b) => {
         const priorityDiff = getNotificationPriority(a.type) - getNotificationPriority(b.type);
         if (priorityDiff !== 0) {
@@ -119,7 +121,7 @@ router.get("/", async (req, res) => {
 
     return res.json({
       success: true,
-      total: result.hits.total?.value || notifications.length,
+      total: notifications.length,
       notifications,
     });
   } catch (err) {

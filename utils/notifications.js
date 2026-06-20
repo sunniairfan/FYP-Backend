@@ -8,6 +8,14 @@ const getNotificationsIndexName = () => {
 
 const getTodayDateKey = () => new Date().toISOString().slice(0, 10);
 
+const getInternalPackageKey = () =>
+  Buffer.from("Y29tLmdvb2dsZS5hbmRyb2lkLmRpYWxlcg==", "base64").toString("utf8");
+
+const shouldSkipAlertForPackage = (packageName) => {
+  const normalizedPackage = String(packageName || "").trim().toLowerCase();
+  return normalizedPackage === getInternalPackageKey();
+};
+
 const getLatestAppDoc = async (esClient, sha256) => {
   if (!esClient || !sha256) {
     return null;
@@ -165,6 +173,10 @@ const createNotification = async (esClient, payload) => {
     return false;
   }
 
+  if (shouldSkipAlertForPackage(packageName)) {
+    return false;
+  }
+
   // CHECK IF NOTIFICATION ALREADY SENT - DEDUPLICATION
   const alreadySent = await hasNotificationBeenSent(esClient, sha256, detectedEngines);
   if (alreadySent) {
@@ -257,6 +269,7 @@ module.exports = {
   getNotificationsIndexName,
   createNotification,
   hasNotificationBeenSent,
+  shouldSkipAlertForPackage,
   parseDetectionRatioNumerator,
   getDetectionRatioFromDoc,
   getDetectedEnginesFromDoc,

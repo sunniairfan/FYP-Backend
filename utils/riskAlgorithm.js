@@ -103,17 +103,14 @@ function calculateWeightedRiskScore(app) {
   // ══════════════════════════════════════════════════════════════
   // 2. MOBSF STATIC ANALYSIS  (base weight 25%)
   //    risk = (100 - security_score)
-  //         + penalty for high-risk findings (+3 each, cap 25)
   //         + penalty for dangerous permissions (tiered)
   // ══════════════════════════════════════════════════════════════
   if (app.mobsfAnalysis) {
     const ms = app.mobsfAnalysis;
     const secScore = typeof ms.security_score === 'number' ? ms.security_score : 50;
-    const highRisk = ms.high_risk_findings || 0;
     const dangerousPerms = Array.isArray(ms.dangerous_permissions) ? ms.dangerous_permissions.length : 0;
 
     let staticScore = Math.max(100 - secScore, 5);
-    staticScore += Math.min(highRisk * 3, 25);
 
     if (dangerousPerms > 0) {
       const permPenalty = dangerousPerms <= 3 ? dangerousPerms * 4
@@ -126,12 +123,11 @@ function calculateWeightedRiskScore(app) {
     result.mobsfStatic.score = staticScore;
     result.mobsfStatic.isAvailable = true;
     result.mobsfStatic.status = statusFromScore(staticScore);
-    result.mobsfStatic.details = { securityScore: secScore, highRiskFindings: highRisk, dangerousPermissions: dangerousPerms };
+    result.mobsfStatic.details = { securityScore: secScore, dangerousPermissions: dangerousPerms };
     result.mobsfStatic.explanation = `MobSF score ${secScore}/100 → base risk ${100-secScore}. `
-      + `${highRisk} high-risk finding(s), ${dangerousPerms} dangerous permission(s) → final ${staticScore}.`;
+      + `${dangerousPerms} dangerous permission(s) → final ${staticScore}.`;
 
-    if (secScore >= 70 && highRisk === 0) result.positiveFactors.push(`✓ MobSF static score ${secScore}/100 — low code-level risk`);
-    if (highRisk > 0)        result.riskFactors.push(`⚠ ${highRisk} high-risk static code finding(s)`);
+    if (secScore >= 70) result.positiveFactors.push(`✓ MobSF static score ${secScore}/100 — low code-level risk`);
     if (dangerousPerms >= 5) result.riskFactors.push(`⚠ ${dangerousPerms} dangerous Android permissions requested`);
     result.dataSourcesCount++;
   }

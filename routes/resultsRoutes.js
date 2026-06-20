@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const { calculateWeightedRiskScore } = require("../utils/riskAlgorithm");
 const { checkVirusTotal } = require("../utils/virusTotal");
+const { shouldSkipAlertForPackage } = require("../utils/notifications");
 const { upsertBlacklistEntry, getBlacklistEntry, listBlacklistEntries } = require("../utils/blacklistDB");
 
 const dedupeApps = (apps = []) => {
@@ -86,11 +87,6 @@ const buildBlacklistEvidenceParts = (app) => {
   const vtRatio = app?.virusTotalAnalysis?.detectionRatio || app?.virusTotalHashCheck?.detectionRatio;
   if (vtRatio && vtRatio !== 'N/A') {
     parts.push(`VirusTotal flagged ${vtRatio}`);
-  }
-
-  const highRisk = Number(app?.mobsfAnalysis?.high_risk_findings || 0);
-  if (highRisk > 0) {
-    parts.push(`static analysis found ${highRisk} high-risk finding${highRisk === 1 ? '' : 's'}`);
   }
 
   const dangerousPerms = Array.isArray(app?.mobsfAnalysis?.dangerous_permissions)
@@ -218,7 +214,6 @@ function buildAppCardHTML(app, index) {
   // Static
   const ms        = app.mobsfAnalysis || {};
   const secScore  = ms.security_score ?? null;
-  const highRisk  = ms.high_risk_findings || 0;
   const danPerms  = Array.isArray(ms.dangerous_permissions) ? ms.dangerous_permissions.length : 0;
   const stColor   = secScore === null ? '#94a3b8' : secScore >= 70 ? '#22c55e' : secScore >= 40 ? '#f59e0b' : '#ef4444';
 
@@ -264,7 +259,7 @@ function buildAppCardHTML(app, index) {
     <div class="source-box">
       <div class="src-label">Static Analysis</div>
       <div class="src-val" style="color:${stColor}">${secScore !== null ? secScore + '/100' : 'N/A'}</div>
-      <div class="src-sub">${highRisk} high-risk &middot; ${danPerms} permission${danPerms !== 1 ? 's' : ''}</div>
+      <div class="src-sub">${danPerms} dangerous permission${danPerms !== 1 ? 's' : ''}</div>
     </div>
     <div class="source-box">
       <div class="src-label">Dynamic Analysis</div>
@@ -722,7 +717,7 @@ router.get("/", requireWebAuth, async (req, res) => {
     <div class="sum-card" onclick="filterCards('malicious')">
       <div class="sum-lbl">Malicious</div>
       <div class="sum-val" style="color:#ef4444">${malCount}</div>
-      <div class="sum-desc">High-risk APKs</div>
+      <div class="sum-desc">Confirmed malware</div>
     </div>
     <div class="sum-card" onclick="filterCards('suspicious')">
       <div class="sum-lbl">Suspicious</div>
@@ -912,7 +907,6 @@ async function runAlgorithm(sha256) {
         detailRows += row('Suspicious', details.suspiciousCount || 0);
       } else if (key === 'mobsfStatic' && details.securityScore !== undefined) {
         detailRows += row('MobSF Score', details.securityScore + '/100');
-        detailRows += row('High-Risk Findings', details.highRiskFindings || 0);
         detailRows += row('Dangerous Permissions', details.dangerousPermissions || 0);
       } else if (key === 'mobsfDynamic' && details.trackers !== undefined) {
         detailRows += row('Trackers', details.trackers || 0);
@@ -1153,6 +1147,11 @@ router.post("/send-notification", requireWebAuth, async (req, res) => {
 
     const appName    = appDoc?.appName || appDoc?.packageName || "Unknown App";
     const pkgName    = appDoc?.packageName || "N/A";
+
+    if (shouldSkipAlertForPackage(pkgName)) {
+      return res.json({ success: true, message: "Notification sent" });
+    }
+
     const socStatus  = (appDoc?.status || "pending").toLowerCase();
     const vtRatio    = appDoc?.virusTotalAnalysis?.detectionRatio || appDoc?.virusTotalHashCheck?.detectionRatio || "N/A";
     const detectedEngines =
